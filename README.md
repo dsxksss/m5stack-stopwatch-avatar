@@ -22,6 +22,7 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 - original soft pop, boop and blip effects are synthesized for expressions, navigation, energy status, brightness and wake events, with automatic quiet-hours muting;
 - hold A+B to enter hardware diagnostics;
 - hold A for an immersive status expression: the left eye shows a softly feathered label while the right eye's opening conveys battery, sound volume or brightness; triple-press A to toggle the saved battery percentage label, hold A again to cycle mute plus four sound levels, or hold B to cycle four brightness levels; after a moment the character winds up, blinks, shakes twice and settles back into its pure expression;
+- hold B to enter an expression-led Wi-Fi mode; KK exposes a temporary `KK-XXXX` captive portal, shows pairing/connecting/connected/failure through its eyes, and stores submitted credentials only in device NVS;
 - dim after 45 seconds of inactivity and clear/switch the AMOLED off after 60 seconds, with touch, button and motion wake;
 - persist brightness, idle timeouts and quiet hours in NVS;
 - use the RX8130 RTC for quiet-hour sleepy behavior, with serial time setting;
@@ -40,9 +41,10 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 | Slowly tilt the device | Gaze continuously follows the tilt direction |
 | Quickly move the device | Add a brief inertial eye/head response without changing expression |
 | A / B | Previous / next expression |
-| Hold A | Open immersive status; release and hold A again to cycle mute plus four sound levels |
+| Hold A | Open immersive status; release and hold A again to cycle mute plus four sound levels, or hold B for brightness |
 | Triple-press A in status | Show / hide the saved battery percentage label in the right eye |
-| Hold B | Enter four-level brightness adjustment; keep holding to repeat about every 320 ms and save |
+| Hold B | Enter Wi-Fi mode; connect a phone to `KK-XXXX` with password `kkfriend` and follow the captive portal |
+| A / B in Wi-Fi mode | Return to the current expression / start or restart pairing |
 | Hold A+B | Enter / exit hardware diagnostics |
 
 `idle`, `listening` and `thinking` are persistent base states. Other reactions return to the previously active base state when their animation finishes instead of always returning to idle.
@@ -101,11 +103,15 @@ brightness 150
 dim 60
 screenoff 300
 quiet 22 7
+wifi
+wifi pair
+wifi retry
+wifi forget
 screen on
 screen off
 ```
 
-The RTC stores device-local time and does not apply time zones automatically. `dim` and `screenoff` use seconds; brightness, timeouts and quiet hours persist in NVS.
+The RTC stores device-local time and does not apply time zones automatically. `dim` and `screenoff` use seconds; brightness, timeouts, quiet hours and Wi-Fi credentials persist in NVS. The pairing portal accepts 2.4 GHz networks; it runs for at most five minutes and never prints the submitted password.
 
 ## Repository map
 
@@ -113,13 +119,14 @@ The RTC stores device-local time and does not apply time zones automatically. `d
 | --- | --- |
 | `src/avatar_engine.*` | Expression catalogue, timelines, easing, drawing and interaction physics |
 | `src/main.cpp` | Device setup, touch/IMU/buttons, vibration, diagnostics and serial commands |
+| `src/wifi_pairing.*` | Non-blocking station connection, temporary captive portal and credential handoff |
 | `docs/HARDWARE_BASELINE.md` | Hardware capabilities and verification boundary |
 | `docs/ENGINEERING_NOTES.md` | Rendering experiments, measurements and implementation decisions |
 | `docs/ROADMAP.md` | Planned work and intentionally unsupported features |
 
 ## Known limitations
 
-- The microphone and offline speech recognition are not connected yet. Serial commands only simulate semantic voice events.
+- The microphone and speech/LLM service are not connected yet. Wi-Fi pairing is only the transport foundation; serial commands still simulate semantic voice events.
 - Deep sleep and external expansion ports are not integrated. The current power strategy switches off only the AMOLED and keeps input sampling active for quick wake-up.
 - RTC support is integrated, but local time must still be set over serial until network time synchronization is added.
 - Long-term battery life has not been measured; the default timeouts are a conservative starting point.

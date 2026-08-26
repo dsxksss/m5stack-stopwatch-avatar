@@ -7,6 +7,7 @@
 
 #include "avatar_engine.h"
 #include "ui_sound.h"
+#include "wifi_pairing.h"
 
 namespace {
 
@@ -20,7 +21,7 @@ constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
 constexpr char kPreferencesNamespace[] = "kk-avatar";
-constexpr uint8_t kSettingsSchemaVersion = 3;
+constexpr uint8_t kSettingsSchemaVersion = 4;
 constexpr uint8_t kDefaultBrightness = 150;
 constexpr uint8_t kDefaultSoundVolume = 56;
 constexpr uint8_t kSoundVolumeLevels[] = {0, 32, 56, 84, 112};
@@ -50,6 +51,8 @@ struct CompanionSettings {
   uint8_t brightness = kDefaultBrightness;
   uint8_t soundVolume = kDefaultSoundVolume;
   bool showBatteryPercent = true;
+  String wifiSsid;
+  String wifiPassword;
   uint32_t dimAfterMs = kDefaultDimAfterMs;
   uint32_t screenOffAfterMs = kDefaultScreenOffAfterMs;
   uint8_t quietStartHour = 22;
@@ -59,12 +62,14 @@ struct CompanionSettings {
 M5IOE1 ioe;
 AvatarEngine avatar;
 UiSoundEngine uiSounds;
+WifiPairing wifiPairing;
 Preferences preferences;
 CompanionSettings settings;
 bool vibrationReady = false;
 bool diagnosticMode = false;
 bool diagnosticToggleLatched = false;
 bool statusMode = false;
+bool wifiMode = false;
 bool rtcValid = false;
 bool chargingStateKnown = false;
 bool charging = false;
@@ -110,6 +115,7 @@ int16_t batteryVoltageMv = -1;
 m5::rtc_datetime_t rtcDateTime;
 ScreenPowerState screenPowerState = ScreenPowerState::Bright;
 ExpressionId statusReturnExpression = ExpressionId::Idle;
+ExpressionId wifiReturnExpression = ExpressionId::Idle;
 
 void setFont();
 void startVibration(uint8_t strength, uint16_t durationMs);
@@ -133,6 +139,8 @@ void loadSettings() {
   settings.soundVolume =
       preferences.getUChar("sound_vol", kDefaultSoundVolume);
   settings.showBatteryPercent = preferences.getBool("battery_pct", true);
+  settings.wifiSsid = preferences.getString("wifi_ssid", "");
+  settings.wifiPassword = preferences.getString("wifi_pass", "");
   settings.dimAfterMs = clampTimeoutSeconds(
       preferences.getUInt("dim_sec", kDefaultDimAfterMs / 1000UL),
       kDefaultDimAfterMs);
@@ -177,6 +185,14 @@ void saveSettings() {
   if (!preferences.isKey("battery_pct") ||
       preferences.getBool("battery_pct") != settings.showBatteryPercent) {
     preferences.putBool("battery_pct", settings.showBatteryPercent);
+  }
+  if (!preferences.isKey("wifi_ssid") ||
+      preferences.getString("wifi_ssid") != settings.wifiSsid) {
+    preferences.putString("wifi_ssid", settings.wifiSsid);
+  }
+  if (!preferences.isKey("wifi_pass") ||
+      preferences.getString("wifi_pass") != settings.wifiPassword) {
+    preferences.putString("wifi_pass", settings.wifiPassword);
   }
   preferences.putUInt("dim_sec", settings.dimAfterMs / 1000UL);
   preferences.putUInt("off_sec", settings.screenOffAfterMs / 1000UL);
@@ -442,6 +458,130 @@ void hideStatus() {
   Serial.println("Immersive energy expression closed");
 }
 
+void renderWifiFace(uint32_t nowMs) {
+  if (!wifiMode) return;
+  avatar.clearEnergyUi();
+  String leftText;
+  String rightText;
+  float eyeLevel = 1.0f;
+  ExpressionId expression = ExpressionId::Curious;
+  AvatarEngine::PlaybackMode playback = AvatarEngine::PlaybackMode::PingPong;
+
+  switch (wifiPairing.state()) {
+    case WifiPairing::State::Offline:
+      leftText = "配网";
+      rightText = wifiPairing.accessPointCode();
+      expression = ExpressionId::Curious;
+      break;
+    case WifiPairing::State::Connecting:
+      leftText = "连接";
+      eyeLevel = 0.58f;
+      expression = ExpressionId::Thinking;
+      break;
+    case WifiPairing::State::Portal:
+      leftText = "配网";
+      rightText = wifiPairing.accessPointCode();
+      expression = ExpressionId::Curious;
+      break;
+    case WifiPairing::State::Connected:
+      leftText = "已连";
+      eyeLevel = wifiPairing.signalLevel();
+      expression = ExpressionId::Listening;
+      break;
+    case WifiPairing::State::Failed:
+      leftText = "失败";
+      rightText = "重试";
+      expression = ExpressionId::Sad;
+      break;
+  }
+
+  avatar.setEnergyUi(eyeLevel, false, false);
+  avatar.setEyeMessage(leftText, rightText, nowMs, 10UL * 60UL * 1000UL);
+  avatar.play(expression, nowMs, playback, false, 240);
+  avatar.invalidate();
+}
+
+void enterWifiMode(uint32_t nowMs) {
+  noteActivity(nowMs);
+  if (statusMode) hideStatus();
+  if (!wifiMode) {
+    wifiReturnExpression = avatar.baseExpression();
+    wifiMode = true;
+    playUiSound(UiSound::Open);
+    startVibration(120, 34);
+  }
+  if (wifiPairing.state() == WifiPairing::State::Offline ||
+      wifiPairing.state() == WifiPairing::State::Failed) {
+    wifiPairing.startPortal(nowMs);
+  }
+  wifiPairing.consumeStateChanged();
+  renderWifiFace(nowMs);
+  Serial.printf("Wi-Fi expression mode: state=%s ap=%s ip=%s\n",
+                wifiPairing.stateName(),
+                wifiPairing.accessPointName().c_str(),
+                wifiPairing.localIp().c_str());
+}
+
+void leaveWifiMode(uint32_t nowMs) {
+  if (!wifiMode) return;
+  if (wifiPairing.portalActive()) wifiPairing.cancelPortal();
+  wifiMode = false;
+  avatar.releaseTouch();
+  avatar.clearEnergyUi();
+  avatar.show(wifiReturnExpression, nowMs, false, 260);
+  avatar.invalidate();
+  playUiSound(UiSound::Close);
+  Serial.println("Wi-Fi expression mode closed");
+}
+
+void updateWifiPairing(uint32_t nowMs) {
+  wifiPairing.update(nowMs);
+  String newSsid;
+  String newPassword;
+  if (wifiPairing.takeNewCredentials(newSsid, newPassword)) {
+    settings.wifiSsid = newSsid;
+    settings.wifiPassword = newPassword;
+    saveSettings();
+    Serial.printf("Wi-Fi credentials saved: ssid=%s\n",
+                  settings.wifiSsid.c_str());
+  }
+  if (!wifiPairing.consumeStateChanged()) return;
+  if (!wifiMode) return;
+  renderWifiFace(nowMs);
+  if (wifiPairing.connected()) {
+    startVibration(150, 45);
+    playUiSound(UiSound::Confirm);
+  } else if (wifiPairing.state() == WifiPairing::State::Failed) {
+    startVibration(90, 70);
+    playUiSound(UiSound::Warning);
+  }
+}
+
+void handleWifiInput(uint32_t nowMs) {
+  const auto touch = M5.Touch.getDetail(0);
+  if (touch.wasPressed()) noteActivity(nowMs);
+  if (touch.isPressed()) avatar.setTouchTarget(touch.x, touch.y);
+  if (touch.wasReleased()) avatar.releaseTouch();
+
+  if (M5.BtnA.wasClicked()) {
+    noteActivity(nowMs);
+    leaveWifiMode(nowMs);
+    return;
+  }
+  if (M5.BtnB.wasClicked()) {
+    noteActivity(nowMs);
+    if (!wifiPairing.portalActive()) {
+      wifiPairing.startPortal(nowMs);
+      wifiPairing.consumeStateChanged();
+      renderWifiFace(nowMs);
+      playUiSound(UiSound::Open);
+    } else {
+      startVibration(95, 24);
+      renderWifiFace(nowMs);
+    }
+  }
+}
+
 void cycleBrightness(uint32_t nowMs) {
   constexpr uint8_t levels[] = {60, 100, 150, 220};
   uint8_t next = levels[0];
@@ -604,7 +744,7 @@ void updateCompanionSensors(uint32_t nowMs) {
     } else if (charging != previousCharging) {
       Serial.printf("Charging state changed: %s\n",
                     charging ? "connected" : "disconnected");
-      if (!diagnosticMode && !statusMode &&
+      if (!diagnosticMode && !statusMode && !wifiMode &&
           screenPowerState != ScreenPowerState::Sleeping) {
         trigger(charging ? ExpressionId::Excited : ExpressionId::Curious,
                 nowMs, 220);
@@ -614,7 +754,7 @@ void updateCompanionSensors(uint32_t nowMs) {
 
   const bool lowBattery = batteryLevel >= 0 &&
                           batteryLevel <= kLowBatteryThreshold && !charging;
-  if (lowBattery && !diagnosticMode && !statusMode &&
+  if (lowBattery && !diagnosticMode && !statusMode && !wifiMode &&
       screenPowerState != ScreenPowerState::Sleeping &&
       (lastLowBatteryReminderMs == 0 ||
        nowMs - lastLowBatteryReminderMs >= kLowBatteryReminderIntervalMs)) {
@@ -626,6 +766,10 @@ void updateCompanionSensors(uint32_t nowMs) {
 }
 
 void updateDisplayPower(uint32_t nowMs) {
+  if (wifiMode) {
+    lastActivityMs = nowMs;
+    return;
+  }
   if (diagnosticMode || statusMode) return;
   const uint32_t inactiveMs = nowMs - lastActivityMs;
 
@@ -663,14 +807,19 @@ void printCompanionStatus() {
   sampleRtc();
   Serial.printf(
       "Status: time=%s date=%s battery=%ld%% voltage=%dmV charging=%s "
-      "brightness=%u volume=%u dim=%lus off=%lus quiet=%02u-%02u\n",
+      "brightness=%u volume=%u dim=%lus off=%lus quiet=%02u-%02u "
+      "wifi=%s ip=%s\n",
       formattedTime().c_str(), formattedDate().c_str(),
       static_cast<long>(batteryLevel), batteryVoltageMv,
       chargeReadingValid ? (charging ? "yes" : "no") : "unknown",
       settings.brightness, settings.soundVolume,
       static_cast<unsigned long>(settings.dimAfterMs / 1000UL),
       static_cast<unsigned long>(settings.screenOffAfterMs / 1000UL),
-      settings.quietStartHour, settings.quietEndHour);
+      settings.quietStartHour, settings.quietEndHour,
+      wifiPairing.stateName(), wifiPairing.localIp().c_str());
+  Serial.printf("Wi-Fi detail: ssid=%s state=%s ip=%s\n",
+                settings.wifiSsid.isEmpty() ? "--" : settings.wifiSsid.c_str(),
+                wifiPairing.stateName(), wifiPairing.localIp().c_str());
 }
 
 bool setRtcFromCommand(const String& command) {
@@ -725,6 +874,39 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
     return true;
   }
   if (command.startsWith("time ")) return setRtcFromCommand(command);
+  if (command == "wifi") {
+    Serial.printf("Wi-Fi: state=%s ssid=%s ip=%s ap=%s\n",
+                  wifiPairing.stateName(),
+                  settings.wifiSsid.isEmpty() ? "--"
+                                              : settings.wifiSsid.c_str(),
+                  wifiPairing.localIp().c_str(),
+                  wifiPairing.accessPointName().c_str());
+    return true;
+  }
+  if (command == "wifi pair") {
+    enterWifiMode(nowMs);
+    if (!wifiPairing.portalActive()) {
+      wifiPairing.startPortal(nowMs);
+      wifiPairing.consumeStateChanged();
+      renderWifiFace(nowMs);
+    }
+    return true;
+  }
+  if (command == "wifi retry") {
+    enterWifiMode(nowMs);
+    wifiPairing.retry(nowMs);
+    wifiPairing.consumeStateChanged();
+    renderWifiFace(nowMs);
+    return true;
+  }
+  if (command == "wifi forget") {
+    settings.wifiSsid = "";
+    settings.wifiPassword = "";
+    saveSettings();
+    wifiPairing.forget();
+    enterWifiMode(nowMs);
+    return true;
+  }
 
   int value = 0;
   if (sscanf(command.c_str(), "brightness %d", &value) == 1) {
@@ -1016,6 +1198,7 @@ void refreshDiagnosticSensors() {
 
 void setDiagnosticMode(bool enabled) {
   if (statusMode) hideStatus();
+  if (wifiMode) leaveWifiMode(millis());
   diagnosticMode = enabled;
   noteActivity(millis());
   stopVibration();
@@ -1192,6 +1375,7 @@ void setup() {
                           M5.Display.height() / 2);
     Serial.println("Avatar sprite allocation failed");
   }
+  wifiPairing.begin(settings.wifiSsid, settings.wifiPassword, millis());
 
   Serial.println("Expression device started");
   Serial.printf("Speaker: %s\n", soundReady ? "ready" : "unavailable");
@@ -1201,12 +1385,12 @@ void setup() {
   Serial.println("Playback test: once|loop|pingpong <expression>");
   Serial.println("Hold A+B for hardware diagnostics");
   Serial.println(
-      "Hold A: status; in status triple A: battery %, hold A: volume, hold B: brightness");
+      "Hold A: status; hold B: Wi-Fi; in status triple A: battery %, hold A: volume, hold B: brightness");
   Serial.println("Sound test: sound");
   Serial.println(
       "Companion commands: status, time [YYYY-MM-DD HH:MM:SS], "
       "brightness 20-255, volume 0-160, dim seconds, screenoff seconds, quiet start end, "
-      "screen on|off");
+      "wifi [pair|retry|forget], screen on|off");
 
   lastActivityMs = millis();
   lastPowerSampleMs = lastActivityMs - kPowerSampleIntervalMs;
@@ -1228,6 +1412,7 @@ void loop() {
   }
 
   handleDiagnosticToggle();
+  updateWifiPairing(nowMs);
   updateCompanionSensors(nowMs);
   handleSerialCommands(nowMs);
 
@@ -1238,18 +1423,19 @@ void loop() {
     if (statusMode) {
       avatar.update(nowMs);
     }
+  } else if (wifiMode) {
+    handleWifiInput(nowMs);
+    if (wifiMode) avatar.update(nowMs);
   } else {
     const bool showStatusRequested =
         M5.BtnA.wasHold() && !M5.BtnB.isPressed();
-    const bool cycleBrightnessRequested =
+    const bool showWifiRequested =
         M5.BtnB.wasHold() && !M5.BtnA.isPressed();
 
     if (showStatusRequested) {
       showStatus(nowMs);
-    } else if (cycleBrightnessRequested) {
-      cycleBrightness(nowMs);
-      brightnessHoldRepeated = true;
-      brightnessRepeatAtMs = nowMs + kBrightnessStatusRepeatMs;
+    } else if (showWifiRequested) {
+      enterWifiMode(nowMs);
     } else if (M5.BtnA.wasClicked()) {
       noteActivity(nowMs);
       avatar.previous(nowMs);
@@ -1261,7 +1447,7 @@ void loop() {
       startVibration(125, 35);
       playUiSound(UiSound::Next);
     }
-    if (!statusMode) {
+    if (!statusMode && !wifiMode) {
       handleProductTouch(nowMs);
       handleImuInteraction(nowMs);
 

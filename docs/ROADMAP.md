@@ -8,7 +8,7 @@ This roadmap separates implemented firmware from future hardware experiments.
 - persistent base states with temporary reactions that return to the active base;
 - touch following, click, double-click, long-press and continuous swipe;
 - accelerometer/gyroscope tilt following with a centered safe-motion area;
-- A/B expression browsing, vibration feedback and hardware diagnostics;
+- expression-aware A/B eye-menu controls, vibration feedback and hardware diagnostics;
 - serial semantic commands for external controllers;
 - RTC-aware quiet hours, battery/charging telemetry and a compact status page;
 - expression-led Wi-Fi pairing through a temporary captive portal;

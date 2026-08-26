@@ -1263,15 +1263,14 @@ void handleProductTouch(uint32_t nowMs) {
     if (gestureAxis == GestureAxis::Horizontal) {
       avatar.releaseTouch();
       const int8_t direction = deltaX > 0 ? -1 : 1;
-      avatar.setSwipeOffset(deltaX, 0.0f,
-                            gestureCommitted ? 0 : direction);
+      avatar.setSwipeOffset(deltaX, 0.0f, 0);
       if (!gestureCommitted && abs(deltaX) >= kGestureCommitPx) {
-        avatar.commitSwipe(direction, nowMs, kSwipeTransitionMs);
+        trigger(direction < 0 ? ExpressionId::Curious
+                              : ExpressionId::Confused,
+                nowMs, kSwipeTransitionMs);
         gestureCommitted = true;
-        startVibration(125, 35);
-        playUiSound(direction < 0 ? UiSound::Previous : UiSound::Next);
-        Serial.printf("Swipe commit: %s dx=%d\n", avatar.activeName(),
-                      deltaX);
+        Serial.printf("Horizontal swipe reaction: %s dx=%d\n",
+                      avatar.activeName(), deltaX);
       }
       return;
     }
@@ -1679,23 +1678,9 @@ void loop() {
   } else {
     const bool showMenuRequested =
         M5.BtnA.wasHold() && !M5.BtnB.isPressed();
-    const bool showWifiRequested =
-        M5.BtnB.wasHold() && !M5.BtnA.isPressed();
 
     if (showMenuRequested) {
       openEyeMenu(nowMs);
-    } else if (showWifiRequested) {
-      enterWifiMode(nowMs);
-    } else if (M5.BtnA.wasClicked()) {
-      noteActivity(nowMs);
-      avatar.previous(nowMs);
-      startVibration(125, 35);
-      playUiSound(UiSound::Previous);
-    } else if (M5.BtnB.wasClicked()) {
-      noteActivity(nowMs);
-      avatar.next(nowMs);
-      startVibration(125, 35);
-      playUiSound(UiSound::Next);
     }
     if (!statusMode && !wifiMode && !eyeMenuMode) {
       handleProductTouch(nowMs);

@@ -18,11 +18,10 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 - tap, double tap, long press, continuous touch tracking, and horizontal/vertical swipes;
 - accelerometer and gyroscope fusion for tilt tracking, with the eyes leading, the head following and a centered safe-motion area;
 - quick movement adds a brief inertial response while keeping the current expression;
-- A/B buttons browse expressions, with vibration feedback;
+- expressions are selected by touch, motion, battery, charging and network context rather than a user-controlled expression catalogue;
 - original soft pop, boop and blip effects are synthesized for expressions, navigation, energy status, brightness and wake events, with automatic quiet-hours muting;
 - hold A+B to enter hardware diagnostics;
-- hold A to open a minimal menu made entirely from KK's eyes; click A to browse battery, brightness, sound and network, double-click A to confirm, and press B to go back. Battery and network remain expressive states, while eye opening directly conveys brightness and volume;
-- hold B to enter a read-only, expression-led Wi-Fi status mode; after releasing B, hold it again for about two seconds to explicitly open the temporary `KK-XXXX` captive portal. KK shows pairing/connecting/connected/failure through its eyes, and only replaces saved credentials after a new network connects successfully;
+- hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse battery, brightness, sound and network, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; battery and network remain expressive states, while eye opening directly conveys brightness and volume;
 - dim after 45 seconds of inactivity and clear/switch the AMOLED off after 60 seconds, with touch, button and motion wake;
 - persist brightness, idle timeouts and quiet hours in NVS;
 - use the RX8130 RTC for quiet-hour sleepy behavior, with serial time setting;
@@ -36,18 +35,15 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 | Double tap | `surprised` |
 | Hold and move | Eyes and head continuously follow the touch point |
 | Long press | `angry` |
-| Swipe left / right | Preview and switch to the adjacent expression |
+| Swipe left / right | Give a brief curious or confused reaction based on direction, then restore the current state |
 | Swipe up / down | `surprised` / `sleepy` |
 | Slowly tilt the device | Gaze continuously follows the tilt direction |
 | Quickly move the device | Add a brief inertial eye/head response without changing expression |
-| A / B | Previous / next expression |
-| Hold A | Open the eye menu |
+| A / B on the normal face | Hold A to open the eye menu; short A/B presses do not switch expressions |
 | A / B in the root menu | Click A to browse, double-click A to confirm, and press B to close |
 | Battery page | Show percentage and map remaining charge to right-eye opening; B returns |
 | Brightness / sound page | Click A to cycle levels quickly, B returns; right-eye opening follows the level |
 | Network page | Double-click A to explicitly start pairing; B cancels or returns, and saved credentials remain until a new connection succeeds |
-| Hold B | Open Wi-Fi status without changing the current connection |
-| A / B in Wi-Fi mode | A returns to the current expression; a B click shows the pairing hint; hold B for about two seconds to start pairing |
 | Hold A+B | Enter / exit hardware diagnostics |
 
 `idle`, `listening` and `thinking` are persistent base states. Other reactions return to the previously active base state when their animation finishes instead of always returning to idle.

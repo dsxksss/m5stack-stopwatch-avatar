@@ -24,7 +24,7 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 - hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse brightness, sound and network, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; swipe down to check battery, while eye opening directly conveys brightness and volume;
 - dim after 45 seconds of inactivity and clear/switch the AMOLED off after 60 seconds, with touch, button and motion wake;
 - persist brightness, idle timeouts and quiet hours in NVS;
-- use the RX8130 RTC for quiet-hour sleepy behavior, with serial time setting;
+- synchronize China Standard Time over NTP after Wi-Fi connects, write it to the RX8130 RTC, and use the RTC for quiet-hour sleepy behavior;
 - semantic serial commands provide a stable input boundary for future voice recognition or external control.
 
 ## Interaction map
@@ -110,7 +110,7 @@ screen on
 screen off
 ```
 
-The RTC stores device-local time and does not apply time zones automatically. `dim` and `screenoff` use seconds; brightness, timeouts, quiet hours and Wi-Fi credentials persist in NVS. In `KK-XXXX`, `XXXX` is the last four hexadecimal digits derived from this device's unique chip ID, used only to distinguish nearby KK devices. The pairing portal accepts 2.4 GHz networks, runs for at most five minutes and never prints the submitted password. A candidate network must connect successfully before it replaces the saved credentials; otherwise KK restores the previous network.
+Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight saving). KK synchronizes after Wi-Fi connects, retries after one minute on failure, and rewrites the RTC every six hours; serial time setting remains available. `dim` and `screenoff` use seconds; brightness, timeouts, quiet hours and Wi-Fi credentials persist in NVS. In `KK-XXXX`, `XXXX` is the last four hexadecimal digits derived from this device's unique chip ID, used only to distinguish nearby KK devices. The pairing portal accepts 2.4 GHz networks, runs for at most five minutes and never prints the submitted password. A candidate network must connect successfully before it replaces the saved credentials; otherwise KK restores the previous network.
 
 ## Repository map
 
@@ -127,7 +127,7 @@ The RTC stores device-local time and does not apply time zones automatically. `d
 
 - The microphone and speech/LLM service are not connected yet. Wi-Fi pairing is only the transport foundation; serial commands still simulate semantic voice events.
 - Deep sleep and external expansion ports are not integrated. The current power strategy switches off only the AMOLED and keeps input sampling active for quick wake-up.
-- RTC support is integrated, but local time must still be set over serial until network time synchronization is added.
+- The network time zone is currently fixed to China Standard Time; other regions still need a time-zone setting.
 - Long-term battery life has not been measured; the default timeouts are a conservative starting point.
 - Subjective motion and gesture tuning may vary with how the device is held.
 

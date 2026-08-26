@@ -12,6 +12,7 @@ This roadmap separates implemented firmware from future hardware experiments.
 - serial semantic commands for external controllers;
 - RTC-aware quiet hours, battery/charging telemetry and a compact status page;
 - expression-led Wi-Fi pairing through a temporary captive portal;
+- non-blocking NTP synchronization for China Standard Time with periodic RX8130 updates;
 - synthesized UI audio with persistent volume levels and quiet-hours muting;
 - NVS-backed brightness and idle-timeout settings;
 - inactivity dimming, 20 fps idle rendering and AMOLED sleep with touch/button/motion wake;
@@ -24,7 +25,7 @@ This roadmap separates implemented firmware from future hardware experiments.
 - add regression checks for expression catalogue and playback transitions;
 - package signed firmware binaries and checksums in GitHub Releases;
 - measure power consumption and decide whether to add true deep sleep beyond the current AMOLED-only sleep strategy;
-- add automatic network time synchronization and a safe RTC setup flow.
+- add a user-facing time-zone setting for regions outside China Standard Time.
 
 ## Exploratory work
 

@@ -4,6 +4,7 @@
 #include <M5IOE1.h>
 #include <M5Unified.h>
 #include <Preferences.h>
+#include <time.h>
 
 #include "avatar_engine.h"
 #include "ui_sound.h"
@@ -34,6 +35,14 @@ constexpr uint32_t kWifiPairingHoldMs = 1800;
 constexpr uint32_t kEyeMenuClickWindowMs = 420;
 constexpr uint32_t kPowerSampleIntervalMs = 5000;
 constexpr uint32_t kRtcSampleIntervalMs = 30000;
+constexpr uint32_t kNetworkTimePollIntervalMs = 250;
+constexpr uint32_t kNetworkTimeSyncTimeoutMs = 15UL * 1000UL;
+constexpr uint32_t kNetworkTimeRetryIntervalMs = 60UL * 1000UL;
+constexpr uint32_t kNetworkTimeResyncIntervalMs = 6UL * 60UL * 60UL * 1000UL;
+constexpr char kNetworkTimeZone[] = "CST-8";
+constexpr char kPrimaryNtpServer[] = "ntp.aliyun.com";
+constexpr char kSecondaryNtpServer[] = "ntp.tencent.com";
+constexpr char kFallbackNtpServer[] = "pool.ntp.org";
 constexpr uint32_t kDimRenderIntervalMs = 50;
 constexpr uint32_t kMotionWakeGraceMs = 1500;
 constexpr float kMotionWakeJerkThreshold = 0.30f;
@@ -78,6 +87,8 @@ bool wifiPairingHoldLatched = false;
 bool eyeMenuInputArmed = false;
 bool eyeMenuWifiHoldLatched = false;
 bool rtcValid = false;
+bool networkTimeConnected = false;
+bool networkTimeAwaiting = false;
 bool chargingStateKnown = false;
 bool charging = false;
 bool chargeReadingValid = false;
@@ -92,6 +103,9 @@ uint32_t eyeMenuAClickDeadlineMs = 0;
 uint32_t eyeMenuPageReadyAtMs = 0;
 uint32_t lastPowerSampleMs = 0;
 uint32_t lastRtcSampleMs = 0;
+uint32_t networkTimeAttemptStartedMs = 0;
+uint32_t lastNetworkTimePollMs = 0;
+uint32_t nextNetworkTimeAttemptMs = 0;
 uint32_t lastDimRenderMs = 0;
 uint32_t screenSleptAtMs = 0;
 uint32_t lastLowBatteryReminderMs = 0;
@@ -520,6 +534,63 @@ void updateWifiPairing(uint32_t nowMs) {
   } else if (wifiPairing.state() == WifiPairing::State::Failed) {
     startVibration(90, 70);
     playUiSound(UiSound::Warning);
+  }
+}
+
+void beginNetworkTimeSync(uint32_t nowMs) {
+  configTzTime(kNetworkTimeZone, kPrimaryNtpServer, kSecondaryNtpServer,
+               kFallbackNtpServer);
+  networkTimeAwaiting = true;
+  networkTimeAttemptStartedMs = nowMs;
+  lastNetworkTimePollMs = nowMs - kNetworkTimePollIntervalMs;
+  nextNetworkTimeAttemptMs = 0;
+  Serial.println("Network time sync started: timezone=Asia/Shanghai (UTC+8)");
+}
+
+void updateNetworkTime(uint32_t nowMs) {
+  if (!wifiPairing.connected()) {
+    networkTimeConnected = false;
+    networkTimeAwaiting = false;
+    networkTimeAttemptStartedMs = 0;
+    nextNetworkTimeAttemptMs = 0;
+    return;
+  }
+
+  if (!networkTimeConnected) {
+    networkTimeConnected = true;
+    beginNetworkTimeSync(nowMs);
+  }
+
+  if (!networkTimeAwaiting) {
+    if (reached(nowMs, nextNetworkTimeAttemptMs)) beginNetworkTimeSync(nowMs);
+    return;
+  }
+
+  if (nowMs - lastNetworkTimePollMs < kNetworkTimePollIntervalMs) return;
+  lastNetworkTimePollMs = nowMs;
+
+  tm calendar = {};
+  if (getLocalTime(&calendar, 0) && calendar.tm_year + 1900 >= 2024 &&
+      calendar.tm_year + 1900 <= 2099) {
+    M5.Rtc.setDateTime(&calendar);
+    sampleRtc();
+    if (rtcValid) {
+      networkTimeAwaiting = false;
+      networkTimeAttemptStartedMs = 0;
+      nextNetworkTimeAttemptMs = nowMs + kNetworkTimeResyncIntervalMs;
+      Serial.printf("Network time synced: %04d-%02d-%02d %02d:%02d:%02d\n",
+                    rtcDateTime.date.year, rtcDateTime.date.month,
+                    rtcDateTime.date.date, rtcDateTime.time.hours,
+                    rtcDateTime.time.minutes, rtcDateTime.time.seconds);
+      return;
+    }
+  }
+
+  if (nowMs - networkTimeAttemptStartedMs >= kNetworkTimeSyncTimeoutMs) {
+    networkTimeAwaiting = false;
+    networkTimeAttemptStartedMs = 0;
+    nextNetworkTimeAttemptMs = nowMs + kNetworkTimeRetryIntervalMs;
+    Serial.println("Network time sync timed out; retrying in 60 seconds");
   }
 }
 
@@ -1553,6 +1624,7 @@ void loop() {
 
   handleDiagnosticToggle();
   updateWifiPairing(nowMs);
+  updateNetworkTime(nowMs);
   updateCompanionSensors(nowMs);
   handleSerialCommands(nowMs);
 

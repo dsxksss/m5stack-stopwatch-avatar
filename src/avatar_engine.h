@@ -16,7 +16,6 @@ enum class ExpressionId : uint8_t {
   Surprised,
   Sad,
   Sleepy,
-  Dizzy,
   Count,
 };
 
@@ -113,6 +112,12 @@ class AvatarEngine {
   void setTiltTarget(float normalizedX, float normalizedY,
                      float motionLeadX = 0.0f, float motionLeadY = 0.0f);
   void setShakeTarget(float normalizedX, float normalizedY, float intensity);
+  void setEnergyUi(float normalizedLevel, bool charging,
+                   bool affectMood = true);
+  void setEyeMessage(const String& leftText, const String& rightText,
+                     uint32_t nowMs, uint32_t holdMs);
+  void beginEnergyDismiss(uint32_t nowMs);
+  void clearEnergyUi();
   void invalidate();
 
   ExpressionId activeExpression() const { return targetExpression_; }
@@ -155,13 +160,12 @@ class AvatarEngine {
   void updateInteraction(uint32_t nowMs);
   void render(uint32_t nowMs);
   void drawEye(const EyePose& eye, float centerX, float centerY, float blink);
-  void drawDizzyEyePattern(const EyePose& eye, float centerX, float centerY,
-                           int8_t side, uint32_t nowMs);
-  void drawDizzyLightning(const EyePose& eye, float centerX, float centerY,
-                          int8_t side, uint32_t nowMs);
+  void drawEyeMessage(const EyePose& eye, float centerX, float centerY,
+                      float blink, const String& text, float opacity);
   DirtyRect eyeBounds(const EyePose& eye, float centerX, float centerY,
                       float blink) const;
   void clearDirtyRect(const DirtyRect& rect);
+  bool waitForVSync(uint32_t nowMs);
   float blinkScale(uint32_t nowMs);
   void recordRenderMetrics(uint32_t nowMs, uint32_t renderStartedUs,
                            uint32_t renderFinishedUs);
@@ -188,6 +192,15 @@ class AvatarEngine {
   uint32_t nextBlinkAtMs_ = 0;
   uint32_t blinkStartedMs_ = 0;
   bool touchActive_ = false;
+  bool energyUiEnabled_ = false;
+  bool energyCharging_ = false;
+  bool energyMoodEnabled_ = true;
+  float energyLevel_ = 1.0f;
+  String leftEyeMessage_;
+  String rightEyeMessage_;
+  uint32_t eyeMessageStartedMs_ = 0;
+  uint32_t eyeMessageEndsAtMs_ = 0;
+  uint32_t energyDismissStartedMs_ = 0;
   float touchTargetX_ = 0.0f;
   float touchTargetY_ = 0.0f;
   float tiltTargetX_ = 0.0f;
@@ -232,6 +245,12 @@ class AvatarEngine {
   uint32_t totalFrameIntervalUs_ = 0;
   uint32_t maximumFrameIntervalUs_ = 0;
   uint32_t previousRenderStartedUs_ = 0;
+  uint32_t vsyncWaitCount_ = 0;
+  uint32_t vsyncTimeoutCount_ = 0;
+  uint32_t totalVsyncWaitUs_ = 0;
+  uint32_t maximumVsyncWaitUs_ = 0;
+  uint32_t vsyncRetryAtMs_ = 0;
+  uint8_t consecutiveVsyncTimeouts_ = 0;
   DirtyRect previousLeftBounds_{};
   DirtyRect previousRightBounds_{};
 };

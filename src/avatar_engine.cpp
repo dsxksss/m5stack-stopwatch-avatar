@@ -13,19 +13,35 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kDesignSize = 1000.0f;
 constexpr uint32_t kFrameIntervalUs = 16667;
 constexpr uint32_t kMetricsReportIntervalMs = 5000;
+constexpr uint8_t kTearingEffectPin = 38;
+constexpr uint32_t kVsyncTimeoutUs = 22000;
 constexpr uint16_t kBackground = TFT_BLACK;
 constexpr uint16_t kEyeColor = TFT_WHITE;
-// One fast grayscale coverage step softens the high-contrast silhouette
-// without the display readback required by alpha-blended smooth primitives.
-constexpr uint16_t kEyeEdgeColor = 0x738E;
+// A mid-gray moving contour caused visible RGB sub-pixel breakup on the
+// AMOLED. Keep moving eye geometry neutral white; text uses its own softer
+// grayscale fringe because it moves much less.
+constexpr uint16_t kEyeEdgeColor = kEyeColor;
 constexpr float kTouchTravelX = 70.0f;
 constexpr float kTouchTravelY = 56.0f;
-constexpr float kTiltTravelX = 112.0f;
-constexpr float kTiltTravelY = 92.0f;
-constexpr float kTiltLeadTravelX = 34.0f;
-constexpr float kTiltLeadTravelY = 28.0f;
+constexpr float kTiltTravelX = 68.0f;
+constexpr float kTiltTravelY = 54.0f;
+constexpr float kTiltLeadTravelX = 18.0f;
+constexpr float kTiltLeadTravelY = 14.0f;
+constexpr float kTiltSafeLimitX = 74.0f;
+constexpr float kTiltSafeLimitY = 59.0f;
 constexpr float kShakeTravelX = 58.0f;
 constexpr float kShakeTravelY = 44.0f;
+constexpr uint32_t kEyeMessageFadeInMs = 420;
+constexpr uint32_t kEyeMessageFadeOutMs = 260;
+constexpr uint32_t kEyeMessageBreathPeriodMs = 1800;
+constexpr float kEyeMessageBreathDepth = 0.10f;
+constexpr float kEyeMessageFloatPixels = 0.75f;
+
+volatile uint32_t gTearingEffectEdges = 0;
+
+void IRAM_ATTR handleTearingEffectEdge() {
+  ++gTearingEffectEdges;
+}
 
 AvatarEngine::EyePose makeEye(
     float x, float y, float width, float height, float roundness = 1.0f,
@@ -96,11 +112,6 @@ const AvatarEngine::MotionProfile kSleepyMotion = makeMotion(
     oscillator(0.0f, 0.0f, 0.0f), oscillator(9.0f, 4.0f, 0.9f),
     oscillator(0.0f, 0.0f, 0.0f), oscillator(0.0f, 0.0f, 0.0f),
     oscillator(1.0f, 0.003f, 0.7f), 320, 420);
-
-const AvatarEngine::MotionProfile kDizzyMotion = makeMotion(
-    oscillator(0.0f, 18.0f, 10.5f), oscillator(0.0f, 7.0f, 6.4f),
-    oscillator(0.0f, 5.0f, 7.0f), oscillator(0.0f, 4.0f, 8.8f),
-    oscillator(1.0f, 0.012f, 4.2f), 140, 300);
 
 const AvatarEngine::MotionProfile kListeningMotion = makeMotion(
     oscillator(0.0f, 1.2f, 0.65f), oscillator(-1.0f, 2.5f, 0.85f),
@@ -322,21 +333,6 @@ const AvatarEngine::Keyframe kSleepyFrames[] = {
      520, 1380, AvatarEngine::Easing::Smooth},
 };
 
-const AvatarEngine::Keyframe kDizzyFrames[] = {
-    {makePose(makeEye(-210.0f, -10.0f, 270.0f, 270.0f),
-              makeEye(210.0f, 4.0f, 244.0f, 244.0f), 1.015f, 0.0f,
-              -5.0f, 0.0f, 0.0f, -4.0f),
-     180, 150, AvatarEngine::Easing::Spring},
-    {makePose(makeEye(-210.0f, 5.0f, 242.0f, 242.0f),
-              makeEye(210.0f, -12.0f, 274.0f, 274.0f), 1.025f, 0.0f,
-              -2.0f, 0.0f, 0.0f, 5.0f),
-     210, 150, AvatarEngine::Easing::Spring},
-    {makePose(makeEye(-210.0f, -7.0f, 264.0f, 264.0f),
-              makeEye(210.0f, 2.0f, 252.0f, 252.0f), 1.015f, 0.0f,
-              -5.0f, 0.0f, 0.0f, -3.5f),
-     210, 360, AvatarEngine::Easing::Spring},
-};
-
 const AvatarEngine::ExpressionSpec kExpressions[] = {
     {"IDLE", kIdleFrames, 1, AvatarEngine::PlaybackMode::Loop,
      kNaturalBlink, kIdleMotion, true},
@@ -360,8 +356,6 @@ const AvatarEngine::ExpressionSpec kExpressions[] = {
      kSoftBlink, kSadMotion, false},
     {"SLEEPY", kSleepyFrames, 2, AvatarEngine::PlaybackMode::Once,
      kNoBlink, kSleepyMotion, false},
-    {"DIZZY", kDizzyFrames, 3, AvatarEngine::PlaybackMode::Once,
-     kNoBlink, kDizzyMotion, false},
 };
 
 static_assert(sizeof(kExpressions) / sizeof(kExpressions[0]) ==
@@ -528,9 +522,13 @@ bool AvatarEngine::begin() {
   expressionStartedMs_ = nowMs;
   scheduleNextBlink(nowMs, true);
   metricsStartedMs_ = nowMs;
+  pinMode(kTearingEffectPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(kTearingEffectPin),
+                  handleTearingEffectEdge, RISING);
   forceRender_ = true;
   requiresFullClear_ = true;
-  Serial.printf("Avatar renderer: %d x %d, normalized scale %.3f, dirty rects\n",
+  Serial.printf(
+      "Avatar renderer: %d x %d, normalized scale %.3f, dirty rects, TE vsync\n",
                 M5.Display.width(), M5.Display.height(),
                 std::min(M5.Display.width(), M5.Display.height()) / kDesignSize);
   return ready_;
@@ -748,8 +746,6 @@ bool AvatarEngine::showFromCommand(const String& rawCommand, uint32_t nowMs) {
     expression = ExpressionId::Sad;
   } else if (command == "sleepy" || command == "sleep") {
     expression = ExpressionId::Sleepy;
-  } else if (command == "dizzy") {
-    expression = ExpressionId::Dizzy;
   } else {
     return false;
   }
@@ -819,8 +815,18 @@ void AvatarEngine::commitSwipe(int8_t direction, uint32_t nowMs,
 
 void AvatarEngine::setTiltTarget(float normalizedX, float normalizedY,
                                  float motionLeadX, float motionLeadY) {
-  tiltTargetX_ = std::max(-1.0f, std::min(1.0f, normalizedX)) * kTiltTravelX;
-  tiltTargetY_ = std::max(-1.0f, std::min(1.0f, normalizedY)) * kTiltTravelY;
+  const auto shapeTilt = [](float value) {
+    constexpr float kDeadZone = 0.075f;
+    const float clamped = std::max(-1.0f, std::min(1.0f, value));
+    const float magnitude = fabsf(clamped);
+    if (magnitude <= kDeadZone) return 0.0f;
+    const float normalized = (magnitude - kDeadZone) / (1.0f - kDeadZone);
+    // Responsive near the center, progressively damped near the edge.
+    const float shaped = normalized * (1.4f - 0.4f * normalized * normalized);
+    return copysignf(shaped, clamped);
+  };
+  tiltTargetX_ = shapeTilt(normalizedX) * kTiltTravelX;
+  tiltTargetY_ = shapeTilt(normalizedY) * kTiltTravelY;
   tiltLeadTargetX_ =
       std::max(-1.0f, std::min(1.0f, motionLeadX)) * kTiltLeadTravelX;
   tiltLeadTargetY_ =
@@ -846,10 +852,21 @@ void AvatarEngine::updateInteraction(uint32_t nowMs) {
       0.033f, std::max(0.001f, (nowMs - lastInteractionUpdateMs_) / 1000.0f));
   lastInteractionUpdateMs_ = nowMs;
 
-  const float targetX =
-      touchActive_ ? touchTargetX_ : tiltTargetX_ + tiltLeadTargetX_;
-  const float targetY =
-      touchActive_ ? touchTargetY_ : tiltTargetY_ + tiltLeadTargetY_;
+  float targetX = touchActive_ ? touchTargetX_
+                               : tiltTargetX_ + tiltLeadTargetX_;
+  float targetY = touchActive_ ? touchTargetY_
+                               : tiltTargetY_ + tiltLeadTargetY_;
+  if (!touchActive_) {
+    // Keep diagonal tilt inside one centered ellipse instead of allowing the
+    // independent X/Y limits to add up into a large corner displacement.
+    const float ellipseRadius =
+        sqrtf((targetX * targetX) / (kTiltSafeLimitX * kTiltSafeLimitX) +
+              (targetY * targetY) / (kTiltSafeLimitY * kTiltSafeLimitY));
+    if (ellipseRadius > 1.0f) {
+      targetX /= ellipseRadius;
+      targetY /= ellipseRadius;
+    }
+  }
   // A damped spring gives direct tracking while pressed and a short, visible
   // rebound when the finger leaves the glass. The values are in design space,
   // so the same feel is retained if the display resolution changes.
@@ -863,6 +880,18 @@ void AvatarEngine::updateInteraction(uint32_t nowMs) {
        interactionVelocityY_ * damping) * elapsedSeconds;
   interactionX_ += interactionVelocityX_ * elapsedSeconds;
   interactionY_ += interactionVelocityY_ * elapsedSeconds;
+  if (!touchActive_) {
+    if (fabsf(interactionX_) > kTiltSafeLimitX) {
+      interactionX_ = std::max(-kTiltSafeLimitX,
+                               std::min(kTiltSafeLimitX, interactionX_));
+      interactionVelocityX_ *= 0.22f;
+    }
+    if (fabsf(interactionY_) > kTiltSafeLimitY) {
+      interactionY_ = std::max(-kTiltSafeLimitY,
+                               std::min(kTiltSafeLimitY, interactionY_));
+      interactionVelocityY_ *= 0.22f;
+    }
+  }
 
   // High-pass IMU acceleration drives a faster spring than ordinary tilt.
   // The small overshoot is intentional: the face appears to have mass instead
@@ -887,9 +916,9 @@ void AvatarEngine::updateInteraction(uint32_t nowMs) {
   const float normalizedY = touchActive_
                                 ? touchTargetY_ / kTouchTravelY
                                 : tiltTargetY_ / kTiltTravelY;
-  const float targetYaw = normalizedX * (touchActive_ ? 32.0f : 21.0f);
-  const float targetPitch = normalizedY * (touchActive_ ? 24.0f : 16.0f);
-  const float targetRoll = -normalizedX * (touchActive_ ? 7.0f : 4.0f);
+  const float targetYaw = normalizedX * (touchActive_ ? 32.0f : 14.0f);
+  const float targetPitch = normalizedY * (touchActive_ ? 24.0f : 11.0f);
+  const float targetRoll = -normalizedX * (touchActive_ ? 7.0f : 3.0f);
   const float headStiffness = touchActive_ ? 46.0f : 15.0f;
   const float headDamping = touchActive_ ? 11.5f : 7.0f;
 
@@ -948,6 +977,44 @@ void AvatarEngine::invalidate() {
   previousLeftBounds_.valid = false;
   previousRightBounds_.valid = false;
   nextFrameUs_ = 0;
+}
+
+void AvatarEngine::setEnergyUi(float normalizedLevel, bool charging,
+                               bool affectMood) {
+  energyUiEnabled_ = true;
+  energyCharging_ = charging;
+  energyMoodEnabled_ = affectMood;
+  energyLevel_ = clamp01(normalizedLevel);
+  energyDismissStartedMs_ = 0;
+  forceRender_ = true;
+}
+
+void AvatarEngine::setEyeMessage(const String& leftText,
+                                 const String& rightText, uint32_t nowMs,
+                                 uint32_t holdMs) {
+  leftEyeMessage_ = leftText;
+  rightEyeMessage_ = rightText;
+  eyeMessageStartedMs_ = nowMs;
+  eyeMessageEndsAtMs_ = nowMs + holdMs;
+  forceRender_ = true;
+}
+
+void AvatarEngine::beginEnergyDismiss(uint32_t nowMs) {
+  energyDismissStartedMs_ = nowMs;
+  eyeMessageEndsAtMs_ = nowMs + 180;
+  forceRender_ = true;
+}
+
+void AvatarEngine::clearEnergyUi() {
+  energyUiEnabled_ = false;
+  energyCharging_ = false;
+  energyMoodEnabled_ = true;
+  leftEyeMessage_ = "";
+  rightEyeMessage_ = "";
+  eyeMessageStartedMs_ = 0;
+  eyeMessageEndsAtMs_ = 0;
+  energyDismissStartedMs_ = 0;
+  forceRender_ = true;
 }
 
 void AvatarEngine::scheduleNextBlink(uint32_t nowMs, bool useInitialDelay) {
@@ -1110,66 +1177,43 @@ void AvatarEngine::drawEye(const EyePose& eye, float centerX, float centerY,
   }
 }
 
-void AvatarEngine::drawDizzyEyePattern(const EyePose& eye, float centerX,
-                                       float centerY, int8_t side,
-                                       uint32_t nowMs) {
-  const float eyeX = centerX + eye.x;
-  const float eyeY = centerY + eye.y;
-  const float radius = std::min(eye.width, eye.height) * 0.5f;
-  if (radius < 8.0f) return;
-
-  // Alternating black and white discs create concentric bands. Each smaller
-  // disc has a slightly different orbit, turning regular rings into an
-  // off-centre vortex that remains readable on a pure-black background.
-  const float time = nowMs / 1000.0f;
-  const float phase = time * (3.0f + shakeIntensity_ * 1.8f) +
-                      (side > 0 ? kPi : 0.0f);
-  constexpr float kRadiusScale[] = {0.74f, 0.58f, 0.43f, 0.29f, 0.14f};
-  constexpr uint16_t kColors[] = {kBackground, kEyeColor, kBackground,
-                                  kEyeColor, kBackground};
-
-  for (uint8_t index = 0; index < 5; ++index) {
-    const float orbit = radius * (0.025f + index * 0.014f);
-    const float layerPhase = phase + index * 0.82f;
-    const int layerX = lroundf(eyeX + cosf(layerPhase) * orbit);
-    const int layerY = lroundf(eyeY + sinf(layerPhase) * orbit);
-    const int layerRadius =
-        std::max(2, static_cast<int>(lroundf(radius * kRadiusScale[index])));
-    M5.Display.fillCircle(layerX, layerY, layerRadius + 1, kEyeEdgeColor);
-    M5.Display.fillCircle(layerX, layerY, layerRadius, kColors[index]);
-  }
-}
-
-void AvatarEngine::drawDizzyLightning(const EyePose& eye, float centerX,
-                                      float centerY, int8_t side,
-                                      uint32_t nowMs) {
-  const uint8_t periodSlots = shakeIntensity_ > 0.55f ? 7 : 12;
-  const uint8_t sideOffset = side > 0 ? periodSlots / 2 : 0;
-  const uint8_t slot = (nowMs / 85 + sideOffset) % periodSlots;
-  if (slot > 1) return;
+void AvatarEngine::drawEyeMessage(const EyePose& eye, float centerX,
+                                  float centerY, float blink,
+                                  const String& text, float opacity) {
+  if (text.isEmpty() || opacity < 0.01f || blink < 0.38f) return;
 
   const float eyeX = centerX + eye.x;
   const float eyeY = centerY + eye.y;
-  const float radius = std::max(eye.width, eye.height) * 0.5f;
-  const int direction = side < 0 ? -1 : 1;
-  const int x0 = lroundf(eyeX + direction * radius * 0.72f);
-  const int y0 = lroundf(eyeY - radius * 0.48f);
-  const int x1 = x0 + direction * 9;
-  const int y1 = y0 - 8;
-  const int x2 = x1 - direction * 4;
-  const int y2 = y1 - 9;
-  const int x3 = x2 + direction * 11;
-  const int y3 = y2 - 9;
+  const int height =
+      std::max(4, static_cast<int>(lroundf(eye.height * blink)));
+  const int top = lroundf(eyeY - height * 0.5f);
+  const int upperCover = lroundf(clamp01(eye.upperLid) * height);
+  const int upperTilt =
+      lroundf(fabsf(eye.upperLidTilt) * height * 0.34f);
+  const int lowerCover = lroundf(clamp01(eye.lowerLid) * height);
+  const int visibleTop = top + upperCover + upperTilt / 2;
+  const int visibleBottom = top + height - lowerCover;
+  if (visibleBottom - visibleTop < 24) return;
 
-  const auto drawBoltSegment = [](int startX, int startY, int endX,
-                                  int endY) {
-    M5.Display.drawLine(startX - 1, startY, endX - 1, endY, kEyeEdgeColor);
-    M5.Display.drawLine(startX + 1, startY, endX + 1, endY, kEyeEdgeColor);
-    M5.Display.drawLine(startX, startY, endX, endY, kEyeColor);
-  };
-  drawBoltSegment(x0, y0, x1, y1);
-  drawBoltSegment(x1, y1, x2, y2);
-  drawBoltSegment(x2, y2, x3, y3);
+  const uint8_t coreLuminance = static_cast<uint8_t>(
+      lroundf(255.0f * (1.0f - clamp01(opacity))));
+  const uint8_t edgeLuminance = static_cast<uint8_t>(
+      lroundf(255.0f * (1.0f - clamp01(opacity) * 0.46f)));
+  const int textX = lroundf(eyeX);
+  const int textY = (visibleTop + visibleBottom) / 2;
+  M5.Display.setFont(&fonts::efontCN_24_b);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(
+      M5.Display.color565(edgeLuminance, edgeLuminance, edgeLuminance));
+  M5.Display.drawString(text, textX - 1, textY);
+  M5.Display.drawString(text, textX + 1, textY);
+  M5.Display.drawString(text, textX, textY - 1);
+  M5.Display.drawString(text, textX, textY + 1);
+  M5.Display.setTextColor(
+      M5.Display.color565(coreLuminance, coreLuminance, coreLuminance));
+  M5.Display.drawString(text, textX, textY);
+  M5.Display.setTextDatum(top_left);
 }
 
 AvatarEngine::DirtyRect AvatarEngine::mergeRects(const DirtyRect& first,
@@ -1210,7 +1254,7 @@ AvatarEngine::DirtyRect AvatarEngine::eyeBounds(const EyePose& eye,
     topExtent = std::max(topExtent, -eye.browY + halfBrowHeight);
   }
 
-  constexpr int kPadding = 4;
+  constexpr int kPadding = 7;
   const int left = std::max(0, static_cast<int>(floorf(eyeX - halfWidth)) - kPadding);
   const int top = std::max(0, static_cast<int>(floorf(eyeY - topExtent)) - kPadding);
   const int right = std::min(M5.Display.width(),
@@ -1225,6 +1269,33 @@ AvatarEngine::DirtyRect AvatarEngine::eyeBounds(const EyePose& eye,
 void AvatarEngine::clearDirtyRect(const DirtyRect& rect) {
   if (!rect.valid || rect.width <= 0 || rect.height <= 0) return;
   M5.Display.fillRect(rect.x, rect.y, rect.width, rect.height, kBackground);
+}
+
+bool AvatarEngine::waitForVSync(uint32_t nowMs) {
+  if (vsyncRetryAtMs_ != 0 && !reached(nowMs, vsyncRetryAtMs_)) return false;
+
+  const uint32_t initialEdge = gTearingEffectEdges;
+  const uint32_t waitStartedUs = micros();
+  while (gTearingEffectEdges == initialEdge) {
+    if (micros() - waitStartedUs >= kVsyncTimeoutUs) {
+      ++vsyncTimeoutCount_;
+      if (++consecutiveVsyncTimeouts_ >= 2) {
+        // A disconnected or sleeping TE line must never stall animation.
+        vsyncRetryAtMs_ = nowMs + 1000;
+        consecutiveVsyncTimeouts_ = 0;
+      }
+      return false;
+    }
+    delayMicroseconds(20);
+  }
+
+  const uint32_t waitedUs = micros() - waitStartedUs;
+  ++vsyncWaitCount_;
+  totalVsyncWaitUs_ += waitedUs;
+  maximumVsyncWaitUs_ = std::max(maximumVsyncWaitUs_, waitedUs);
+  consecutiveVsyncTimeouts_ = 0;
+  vsyncRetryAtMs_ = 0;
+  return true;
 }
 
 void AvatarEngine::render(uint32_t nowMs) {
@@ -1261,6 +1332,64 @@ void AvatarEngine::render(uint32_t nowMs) {
         spec(adjacentExpression(swipePreviewDirection_)).keyframes[0].pose;
     renderedPose = interpolate(renderedPose, previewPose,
                                swipePreviewAmount_, Easing::Smooth);
+  }
+  if (energyUiEnabled_) {
+    float visibleEnergy = energyLevel_;
+    if (energyCharging_) {
+      const float chargePhase = fmodf(nowMs / 1800.0f, 1.0f);
+      const float chargePulse = sinf(chargePhase * kPi);
+      // Keep the right-eye gauge locked to the measured percentage. Only the
+      // message-bearing left eye breathes to indicate incoming power.
+      renderedPose.leftEye.width *= 1.0f + chargePulse * 0.018f;
+      renderedPose.leftEye.height *= 1.0f + chargePulse * 0.018f;
+    }
+
+    // The right eye is the gauge: its remaining white opening directly shows
+    // battery, brightness or sound level. Battery mode additionally makes the
+    // whole head heavier as energy runs down.
+    const float fatigue = 1.0f - clamp01(visibleEnergy);
+    const float energyLid = fatigue * 0.88f;
+    renderedPose.rightEye.upperLid =
+        std::max(renderedPose.rightEye.upperLid, energyLid);
+    if (energyMoodEnabled_) {
+      renderedPose.faceY += fatigue * 26.0f;
+      renderedPose.headPitch += fatigue * 5.0f;
+    }
+
+    if (energyDismissStartedMs_ != 0) {
+      const uint32_t elapsed = nowMs - energyDismissStartedMs_;
+      if (elapsed < 900) {
+        if (elapsed < 140) {
+          // A small anticipatory lean gives the gesture a readable wind-up.
+          const float windUp = smootherStep(elapsed / 140.0f);
+          renderedPose.faceX -= windUp * 11.0f;
+          renderedPose.faceY += windUp * 4.0f;
+          renderedPose.headYaw -= windUp * 6.0f;
+          renderedPose.headRoll -= windUp * 4.0f;
+          renderedPose.faceScale *= 1.0f - windUp * 0.018f;
+        } else if (elapsed < 690) {
+          // Two decisive side-to-side beats, with a small upward bounce.
+          const float progress = (elapsed - 140) / 550.0f;
+          const float envelope = sinf(progress * kPi);
+          const float shake = sinf(progress * kPi * 4.0f) * envelope;
+          renderedPose.faceX += shake * 38.0f;
+          renderedPose.faceY -= sinf(progress * kPi) * 9.0f;
+          renderedPose.headYaw += shake * 19.0f;
+          renderedPose.headRoll += shake * 12.0f;
+          renderedPose.faceScale *=
+              1.0f + sinf(progress * kPi) * 0.035f;
+        } else {
+          // A damped overshoot prevents the face from stopping mechanically.
+          const float settle = (elapsed - 690) / 210.0f;
+          const float overshoot =
+              sinf(settle * kPi * 2.0f) * (1.0f - settle);
+          renderedPose.faceX += overshoot * 15.0f;
+          renderedPose.faceY -= sinf(settle * kPi) * 4.0f;
+          renderedPose.headYaw += overshoot * 8.0f;
+          renderedPose.headRoll += overshoot * 6.0f;
+        }
+      }
+    }
   }
   const float swipeTravel = std::min(
       1.0f, (fabsf(swipeOffsetX_) + fabsf(swipeOffsetY_) * 0.6f) / 110.0f);
@@ -1319,28 +1448,54 @@ void AvatarEngine::render(uint32_t nowMs) {
       lroundf((renderedPose.faceY + motion.faceY) * designScale +
               swipeOffsetY_ + shakeOffsetY_ * designScale * 0.30f);
 
-  const float blink = blinkScale(nowMs);
+  float blink = blinkScale(nowMs);
+  if (energyDismissStartedMs_ != 0) {
+    const uint32_t elapsed = nowMs - energyDismissStartedMs_;
+    constexpr float kDismissClosedScale = 0.06f;
+    if (elapsed >= 90 && elapsed < 245) {
+      const float progress = smootherStep((elapsed - 90) / 155.0f);
+      blink = std::min(
+          blink, 1.0f + (kDismissClosedScale - 1.0f) * progress);
+    } else if (elapsed >= 245 && elapsed < 410) {
+      const float progress = smootherStep((elapsed - 245) / 165.0f);
+      blink = std::min(
+          blink, kDismissClosedScale + (1.0f - kDismissClosedScale) * progress);
+    } else if (elapsed >= 610 && elapsed < 690) {
+      const float progress = smootherStep((elapsed - 610) / 80.0f);
+      blink = std::min(blink, 1.0f + (0.24f - 1.0f) * progress);
+    } else if (elapsed >= 690 && elapsed < 790) {
+      const float progress = smootherStep((elapsed - 690) / 100.0f);
+      blink = std::min(blink, 0.24f + (1.0f - 0.24f) * progress);
+    }
+  }
+
+  float eyeMessageOpacity = 0.0f;
+  float eyeMessageOffsetY = 0.0f;
+  if (energyUiEnabled_ && eyeMessageStartedMs_ != 0 &&
+      !reached(nowMs, eyeMessageEndsAtMs_)) {
+    const uint32_t messageElapsedMs = nowMs - eyeMessageStartedMs_;
+    const float enter = smootherStep(
+        messageElapsedMs / static_cast<float>(kEyeMessageFadeInMs));
+    const uint32_t remaining = eyeMessageEndsAtMs_ - nowMs;
+    const float exit =
+        remaining < kEyeMessageFadeOutMs
+            ? smootherStep(remaining /
+                           static_cast<float>(kEyeMessageFadeOutMs))
+            : 1.0f;
+    const float breathPhase =
+        messageElapsedMs * (2.0f * kPi / kEyeMessageBreathPeriodMs) -
+        kPi * 0.5f;
+    const float breath =
+        1.0f - kEyeMessageBreathDepth * (0.5f + 0.5f * sinf(breathPhase));
+    eyeMessageOpacity = std::min(enter, exit) * breath;
+    eyeMessageOffsetY = (1.0f - enter) * 2.5f - (1.0f - exit) * 1.5f +
+                        sinf(breathPhase) * kEyeMessageFloatPixels;
+  }
   DirtyRect leftBounds =
       eyeBounds(renderedPose.leftEye, centerX, centerY, blink);
   DirtyRect rightBounds =
       eyeBounds(renderedPose.rightEye, centerX, centerY, blink);
-  if (targetExpression_ == ExpressionId::Dizzy) {
-    const auto expandForLightning = [width, height](DirtyRect& bounds) {
-      constexpr int kEffectPadding = 28;
-      const int left = std::max(0, bounds.x - kEffectPadding);
-      const int top = std::max(0, bounds.y - kEffectPadding);
-      const int right =
-          std::min(width, bounds.x + bounds.width + kEffectPadding);
-      const int bottom =
-          std::min(height, bounds.y + bounds.height + kEffectPadding);
-      bounds = {static_cast<int16_t>(left), static_cast<int16_t>(top),
-                static_cast<int16_t>(right - left),
-                static_cast<int16_t>(bottom - top), true};
-    };
-    expandForLightning(leftBounds);
-    expandForLightning(rightBounds);
-  }
-
+  waitForVSync(nowMs);
   M5.Display.startWrite();
   if (requiresFullClear_) {
     M5.Display.fillScreen(kBackground);
@@ -1351,12 +1506,12 @@ void AvatarEngine::render(uint32_t nowMs) {
   }
   drawEye(renderedPose.leftEye, centerX, centerY, blink);
   drawEye(renderedPose.rightEye, centerX, centerY, blink);
-  if (targetExpression_ == ExpressionId::Dizzy) {
-    drawDizzyEyePattern(renderedPose.leftEye, centerX, centerY, -1, nowMs);
-    drawDizzyEyePattern(renderedPose.rightEye, centerX, centerY, 1, nowMs);
-    drawDizzyLightning(renderedPose.leftEye, centerX, centerY, -1, nowMs);
-    drawDizzyLightning(renderedPose.rightEye, centerX, centerY, 1, nowMs);
-  }
+  drawEyeMessage(renderedPose.leftEye, centerX, centerY + eyeMessageOffsetY,
+                 blink,
+                 leftEyeMessage_, eyeMessageOpacity);
+  drawEyeMessage(renderedPose.rightEye, centerX, centerY + eyeMessageOffsetY,
+                 blink,
+                 rightEyeMessage_, eyeMessageOpacity);
   M5.Display.endWrite();
 
   previousLeftBounds_ = leftBounds;
@@ -1388,11 +1543,21 @@ void AvatarEngine::recordRenderMetrics(uint32_t nowMs,
   const uint32_t intervalCount = metricsFrameCount_ > 1 ? metricsFrameCount_ - 1 : 1;
   const float averageIntervalMs =
       totalFrameIntervalUs_ / (intervalCount * 1000.0f);
+  const uint32_t vsyncAttempts = vsyncWaitCount_ + vsyncTimeoutCount_;
+  const float vsyncLockRate =
+      vsyncAttempts == 0 ? 0.0f : vsyncWaitCount_ * 100.0f / vsyncAttempts;
+  const float averageVsyncWaitMs =
+      vsyncWaitCount_ == 0
+          ? 0.0f
+          : totalVsyncWaitUs_ / (vsyncWaitCount_ * 1000.0f);
   Serial.printf(
       "[avatar perf] fps=%.1f render_avg=%.2fms render_max=%.2fms "
-      "frame_avg=%.2fms frame_max=%.2fms\n",
+      "frame_avg=%.2fms frame_max=%.2fms vsync=%.1f%% "
+      "wait_avg=%.2fms wait_max=%.2fms timeouts=%lu\n",
       fps, averageRenderMs, maximumRenderTimeUs_ / 1000.0f,
-      averageIntervalMs, maximumFrameIntervalUs_ / 1000.0f);
+      averageIntervalMs, maximumFrameIntervalUs_ / 1000.0f, vsyncLockRate,
+      averageVsyncWaitMs, maximumVsyncWaitUs_ / 1000.0f,
+      static_cast<unsigned long>(vsyncTimeoutCount_));
 
   metricsStartedMs_ = nowMs;
   metricsFrameCount_ = 0;
@@ -1401,6 +1566,10 @@ void AvatarEngine::recordRenderMetrics(uint32_t nowMs,
   totalFrameIntervalUs_ = 0;
   maximumFrameIntervalUs_ = 0;
   previousRenderStartedUs_ = 0;
+  vsyncWaitCount_ = 0;
+  vsyncTimeoutCount_ = 0;
+  totalVsyncWaitUs_ = 0;
+  maximumVsyncWaitUs_ = 0;
 }
 
 void AvatarEngine::update(uint32_t nowMs) {

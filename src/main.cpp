@@ -21,6 +21,7 @@ constexpr uint16_t kImuCalibrationSamples = 30;
 constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
+constexpr char kFirmwareVersion[] = "0.6.1";
 constexpr char kPreferencesNamespace[] = "kk-avatar";
 constexpr uint8_t kSettingsSchemaVersion = 5;
 constexpr uint8_t kDefaultBrightness = 150;
@@ -33,7 +34,7 @@ constexpr uint32_t kStatusMessageHoldMs = 3400;
 constexpr uint32_t kStatusDismissAnimationMs = 900;
 constexpr uint32_t kWifiPairingHoldMs = 1800;
 constexpr uint32_t kEyeMenuClickWindowMs = 420;
-constexpr uint8_t kEyeMenuItemCount = 4;
+constexpr uint8_t kEyeMenuItemCount = 5;
 constexpr uint32_t kPowerSampleIntervalMs = 5000;
 constexpr uint32_t kRtcSampleIntervalMs = 30000;
 constexpr uint32_t kNetworkTimePollIntervalMs = 250;
@@ -59,6 +60,7 @@ enum class EyeMenuPage : uint8_t {
   Sound,
   QuietMute,
   Wifi,
+  Version,
 };
 
 struct CompanionSettings {
@@ -709,7 +711,7 @@ void renderEyeMenu(uint32_t nowMs) {
   ExpressionId expression = ExpressionId::Curious;
 
   if (eyeMenuPage == EyeMenuPage::Root) {
-    constexpr const char* labels[] = {"亮度", "音量", "夜静", "网络"};
+    constexpr const char* labels[] = {"亮度", "音量", "夜静", "网络", "版本"};
     leftText = labels[eyeMenuIndex % kEyeMenuItemCount];
     rightText = String((eyeMenuIndex % kEyeMenuItemCount) + 1) + "/" +
                 String(kEyeMenuItemCount);
@@ -733,7 +735,7 @@ void renderEyeMenu(uint32_t nowMs) {
     rightText = settings.quietMuteEnabled ? "开" : "关";
     eyeLevel = settings.quietMuteEnabled ? 0.58f : 1.0f;
     avatar.setEnergyUi(eyeLevel, false, false);
-  } else {
+  } else if (eyeMenuPage == EyeMenuPage::Wifi) {
     switch (wifiPairing.state()) {
       case WifiPairing::State::Offline:
         leftText = "网络";
@@ -762,6 +764,11 @@ void renderEyeMenu(uint32_t nowMs) {
         break;
     }
     avatar.setEnergyUi(eyeLevel, false, false);
+  } else {
+    leftText = "版本";
+    rightText = kFirmwareVersion;
+    expression = ExpressionId::Listening;
+    avatar.setEnergyUi(1.0f, false, false);
   }
 
   avatar.setEyeMessage(leftText, rightText, nowMs, 10UL * 60UL * 1000UL);
@@ -918,6 +925,11 @@ void handleEyeMenuInput(uint32_t nowMs) {
   }
   if (eyeMenuPage == EyeMenuPage::QuietMute) {
     toggleQuietMute(nowMs);
+    renderEyeMenu(nowMs);
+    return;
+  }
+  if (eyeMenuPage == EyeMenuPage::Version) {
+    startVibration(55, 16);
     renderEyeMenu(nowMs);
     return;
   }
@@ -1122,10 +1134,10 @@ void printCompanionStatus() {
   samplePower();
   sampleRtc();
   Serial.printf(
-      "Status: time=%s date=%s battery=%ld%% voltage=%dmV charging=%s "
+      "Status: version=%s time=%s date=%s battery=%ld%% voltage=%dmV charging=%s "
       "brightness=%u volume=%u dim=%lus off=%lus quiet=%s/%02u-%02u "
       "wifi=%s ip=%s\n",
-      formattedTime().c_str(), formattedDate().c_str(),
+      kFirmwareVersion, formattedTime().c_str(), formattedDate().c_str(),
       static_cast<long>(batteryLevel), batteryVoltageMv,
       chargeReadingValid ? (charging ? "yes" : "no") : "unknown",
       settings.brightness, settings.soundVolume,
@@ -1625,6 +1637,7 @@ void setup() {
   wifiPairing.begin(settings.wifiSsid, settings.wifiPassword, millis());
 
   Serial.println("Expression device started");
+  Serial.printf("Firmware version: %s\n", kFirmwareVersion);
   Serial.printf("Speaker: %s\n", soundReady ? "ready" : "unavailable");
   Serial.println(
       "Commands: idle listening thinking happy excited curious confused "

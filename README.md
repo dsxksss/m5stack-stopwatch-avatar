@@ -21,7 +21,7 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 - expressions are selected by touch, motion, battery, charging and network context rather than a user-controlled expression catalogue;
 - original soft pop, boop and blip effects are synthesized for expressions, navigation, energy status, brightness and wake events, with automatic quiet-hours muting;
 - hold A+B to enter hardware diagnostics;
-- hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse brightness, sound, scheduled quiet mute and network, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; swipe down to check battery, while eye opening directly conveys brightness and volume;
+- hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse brightness, sound, scheduled quiet mute, network and firmware version, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; swipe down to check battery, while eye opening directly conveys brightness and volume;
 - dim after 45 seconds of inactivity and clear/switch the AMOLED off after 60 seconds, with touch, button and motion wake;
 - persist brightness, idle timeouts and quiet hours in NVS;
 - synchronize China Standard Time over NTP after Wi-Fi connects, write it to the RX8130 RTC, and use the RTC for quiet-hour sleepy behavior;
@@ -45,6 +45,7 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 | Brightness / sound page | Click A to cycle levels quickly, B returns; right-eye opening follows the level |
 | Scheduled quiet page | Disabled by default. Click A to toggle and save the `22:00–07:00` mute window, B returns; disabling mute does not disable the sleepy night expression |
 | Network page | The resting view only reports Wi-Fi status. Hold A to reveal the pair/change-network prompt and keep holding for about two seconds to start pairing; B cancels or returns, and saved credentials remain until a new connection succeeds |
+| Version page | Read-only eye view showing firmware version `0.6.1`; B returns |
 | Hold A+B | Enter / exit hardware diagnostics |
 
 `idle`, `listening` and `thinking` are persistent base states. Other reactions return to the previously active base state when their animation finishes instead of always returning to idle.
@@ -123,6 +124,36 @@ Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight sav
 | `docs/HARDWARE_BASELINE.md` | Hardware capabilities and verification boundary |
 | `docs/ENGINEERING_NOTES.md` | Rendering experiments, measurements and implementation decisions |
 | `docs/ROADMAP.md` | Planned work and intentionally unsupported features |
+
+## Next implementation handoff: LAN eye messages
+
+This feature is planned but not implemented in firmware `0.6.1`. Its goal is to let a phone on the same Wi-Fi send a short message that appears inside KK's eyes without introducing a conventional on-device panel.
+
+### Required behavior
+
+- Add a station-mode HTTP page at `/message` with two compact inputs: `left` and `right`. Each field represents the text placed in one eye.
+- Add `POST /api/message` using URL-encoded form fields `left`, `right` and optional `hold_ms`. Clamp `hold_ms` to `1500–10000`; default to `3400`.
+- Limit each eye to four visible UTF-8 characters and the complete request body to 128 bytes. Reject missing, malformed or oversized input with HTTP `400` or `413`.
+- The HTTP handler must only validate and enqueue data. Rendering, sound, vibration and avatar state changes must stay in the main loop so network traffic cannot block TE-synchronized animation.
+- Reuse `AvatarEngine::setEyeMessage()` and the existing fade, breathing text, blink/head-shake dismissal and base-expression restoration. B dismisses early.
+- Diagnostic mode, pairing, the eye menu and battery status take priority. Hold one pending message while those modes are active; the newest pending message may replace the older one.
+- An accepted message may wake the AMOLED and reset the idle timer. It must never manually select a permanent expression.
+
+### Networking and safety boundaries
+
+- Serve the message page only while station Wi-Fi is connected. Stop it before the captive pairing portal starts and restart it after station reconnection; only one service may own port 80 at a time.
+- Do not expose Wi-Fi credentials, message content or request bodies in serial logs. Escape all text inserted into HTML and never treat received text as markup.
+- Phase one is LAN-only: no cloud relay, port forwarding, authentication, microphone, speech recognition or LLM calls. Document that any client already on the local network can submit a message until authentication is added.
+- Prefer a small `local_message_server.*` module, with explicit start/stop coordination from `main.cpp`, rather than drawing from `wifi_pairing.cpp` callbacks.
+
+### Acceptance checks
+
+1. Pairing and saved-network restoration still work, including cancelling the portal with B.
+2. Twenty consecutive valid submissions display and dismiss without a reboot, leak-like slowdown or loss of the previous base expression.
+3. Invalid UTF-8, empty messages, oversized fields and oversized bodies are rejected without rendering.
+4. Menu/status activity defers the message; the newest pending message appears after the higher-priority mode exits.
+5. Real hardware remains near 60 fps with TE synchronization at 100% and no recurring frame timeout while the page is loaded and messages are submitted.
+6. Update both READMEs and engineering notes with the final endpoint contract, memory use and real-device measurements.
 
 ## Known limitations
 

@@ -30,11 +30,6 @@ constexpr uint32_t kDefaultDimAfterMs = 45UL * 1000UL;
 constexpr uint32_t kDefaultScreenOffAfterMs = 60UL * 1000UL;
 constexpr uint32_t kStatusMessageHoldMs = 3400;
 constexpr uint32_t kStatusDismissAnimationMs = 900;
-constexpr uint32_t kBrightnessStatusHoldDelayMs = 280;
-constexpr uint32_t kBrightnessStatusRepeatMs = 320;
-constexpr uint32_t kSoundStatusHoldDelayMs = 420;
-constexpr uint32_t kSoundStatusRepeatMs = 450;
-constexpr uint32_t kStatusTripleClickWindowMs = 480;
 constexpr uint32_t kWifiPairingHoldMs = 1800;
 constexpr uint32_t kEyeMenuClickWindowMs = 420;
 constexpr uint32_t kPowerSampleIntervalMs = 5000;
@@ -50,7 +45,6 @@ enum class GestureAxis : uint8_t { None, Horizontal, Vertical };
 enum class ScreenPowerState : uint8_t { Bright, Dimmed, Sleeping };
 enum class EyeMenuPage : uint8_t {
   Root,
-  Battery,
   Brightness,
   Sound,
   Wifi,
@@ -59,7 +53,6 @@ enum class EyeMenuPage : uint8_t {
 struct CompanionSettings {
   uint8_t brightness = kDefaultBrightness;
   uint8_t soundVolume = kDefaultSoundVolume;
-  bool showBatteryPercent = true;
   String wifiSsid;
   String wifiPassword;
   uint32_t dimAfterMs = kDefaultDimAfterMs;
@@ -95,11 +88,6 @@ uint32_t lastImuInteractionMs = 0;
 uint32_t lastActivityMs = 0;
 uint32_t statusDismissesAtMs = 0;
 uint32_t statusReactionStartsAtMs = 0;
-uint32_t brightnessChangedMs = 0;
-uint32_t brightnessRepeatAtMs = 0;
-uint32_t soundChangedMs = 0;
-uint32_t soundRepeatAtMs = 0;
-uint32_t statusAClickDeadlineMs = 0;
 uint32_t eyeMenuAClickDeadlineMs = 0;
 uint32_t eyeMenuPageReadyAtMs = 0;
 uint32_t lastPowerSampleMs = 0;
@@ -117,10 +105,6 @@ float previousAccelY = 0.0f;
 float previousAccelZ = 0.0f;
 float shakeEnergy = 0.0f;
 bool statusDismissing = false;
-bool brightnessHoldRepeated = false;
-bool soundHoldRepeated = false;
-bool soundAdjustmentArmed = false;
-uint8_t statusAClickCount = 0;
 uint8_t eyeMenuAClickCount = 0;
 uint8_t eyeMenuIndex = 0;
 uint8_t motionWakeSampleCount = 0;
@@ -160,7 +144,6 @@ void loadSettings() {
       preferences.getUChar("brightness", kDefaultBrightness);
   settings.soundVolume =
       preferences.getUChar("sound_vol", kDefaultSoundVolume);
-  settings.showBatteryPercent = preferences.getBool("battery_pct", true);
   settings.wifiSsid = preferences.getString("wifi_ssid", "");
   settings.wifiPassword = preferences.getString("wifi_pass", "");
   settings.dimAfterMs = clampTimeoutSeconds(
@@ -203,10 +186,6 @@ void saveSettings() {
   if (!preferences.isKey("sound_vol") ||
       preferences.getUChar("sound_vol") != settings.soundVolume) {
     preferences.putUChar("sound_vol", settings.soundVolume);
-  }
-  if (!preferences.isKey("battery_pct") ||
-      preferences.getBool("battery_pct") != settings.showBatteryPercent) {
-    preferences.putBool("battery_pct", settings.showBatteryPercent);
   }
   if (!preferences.isKey("wifi_ssid") ||
       preferences.getString("wifi_ssid") != settings.wifiSsid) {
@@ -348,37 +327,18 @@ uint8_t brightnessLevelIndex() {
 
 void setStatusEyeMessage(uint32_t nowMs) {
   String leftText;
-  String rightText;
-  const bool soundFeedback =
-      soundChangedMs != 0 && nowMs - soundChangedMs < 1200;
-  const bool brightnessFeedback =
-      brightnessChangedMs != 0 && nowMs - brightnessChangedMs < 1200;
-  if (soundFeedback) {
-    const uint8_t activeLevel = soundVolumeLevelIndex();
-    leftText = activeLevel == 0 ? "静音" : "音量";
-    rightText = "";
-  } else if (brightnessFeedback) {
-    leftText = "亮度";
-    rightText = "";
-  } else if (charging) {
+  const String rightText =
+      batteryLevel >= 0 ? String(batteryLevel) + "%" : "--";
+  if (charging) {
     leftText = "充电";
-    if (settings.showBatteryPercent && batteryLevel >= 0) {
-      rightText = String(batteryLevel) + "%";
-    }
   } else if (batteryLevel >= 80) {
     leftText = "充足";
-    if (settings.showBatteryPercent) rightText = String(batteryLevel) + "%";
   } else if (batteryLevel >= 45) {
     leftText = "不错";
-    if (settings.showBatteryPercent) rightText = String(batteryLevel) + "%";
   } else if (batteryLevel >= 20) {
     leftText = "累了";
-    if (settings.showBatteryPercent) rightText = String(batteryLevel) + "%";
   } else {
     leftText = "休息";
-    if (settings.showBatteryPercent && batteryLevel >= 0) {
-      rightText = String(batteryLevel) + "%";
-    }
   }
   avatar.setEyeMessage(leftText, rightText, nowMs,
                        kStatusMessageHoldMs + 180);
@@ -415,26 +375,11 @@ void showStatus(uint32_t nowMs) {
   noteActivity(nowMs);
   samplePower();
   sampleRtc();
-  const bool soundFeedback =
-      soundChangedMs != 0 && nowMs - soundChangedMs < 1200;
-  const bool brightnessFeedback =
-      brightnessChangedMs != 0 && nowMs - brightnessChangedMs < 1200;
-  if (soundFeedback) {
-    avatar.setEnergyUi(soundVolumeLevelIndex() / 4.0f, false, false);
-  } else if (brightnessFeedback) {
-    avatar.setEnergyUi((brightnessLevelIndex() + 1) / 4.0f, false, false);
-  } else {
-    avatar.setEnergyUi(batteryLevel >= 0 ? batteryLevel / 100.0f : 1.0f,
-                       charging, true);
-  }
+  avatar.setEnergyUi(batteryLevel >= 0 ? batteryLevel / 100.0f : 1.0f,
+                     charging, true);
   setStatusEyeMessage(nowMs);
   if (!statusMode) {
     playUiSound(UiSound::Open);
-    soundAdjustmentArmed = !M5.BtnA.isPressed();
-    soundRepeatAtMs = 0;
-    soundHoldRepeated = false;
-    statusAClickCount = 0;
-    statusAClickDeadlineMs = 0;
     statusReturnExpression = avatar.baseExpression();
     ExpressionId statusExpression = ExpressionId::Idle;
     if (charging) {
@@ -466,13 +411,6 @@ void hideStatus() {
   statusDismissing = false;
   statusReactionStartsAtMs = 0;
   statusDismissesAtMs = 0;
-  brightnessRepeatAtMs = 0;
-  brightnessHoldRepeated = false;
-  soundRepeatAtMs = 0;
-  soundHoldRepeated = false;
-  soundAdjustmentArmed = false;
-  statusAClickCount = 0;
-  statusAClickDeadlineMs = 0;
   avatar.releaseTouch();
   avatar.clearEnergyUi();
   avatar.show(statusReturnExpression, millis(), false, 260);
@@ -641,7 +579,6 @@ void cycleBrightness(uint32_t nowMs, bool refreshStatus = true) {
     }
   }
   settings.brightness = next;
-  brightnessChangedMs = nowMs;
   saveSettings();
   M5.Display.setBrightness(settings.brightness);
   startVibration(115, 30);
@@ -656,7 +593,6 @@ void cycleSoundVolume(uint32_t nowMs, bool refreshStatus = true) {
       (currentIndex + 1) %
       (sizeof(kSoundVolumeLevels) / sizeof(kSoundVolumeLevels[0]));
   settings.soundVolume = kSoundVolumeLevels[nextIndex];
-  soundChangedMs = nowMs;
   saveSettings();
   uiSounds.setVolume(settings.soundVolume);
   startVibration(105, 28);
@@ -679,22 +615,13 @@ void renderEyeMenu(uint32_t nowMs) {
   ExpressionId expression = ExpressionId::Curious;
 
   if (eyeMenuPage == EyeMenuPage::Root) {
-    constexpr const char* labels[] = {"电量", "亮度", "音量", "网络"};
-    leftText = labels[eyeMenuIndex % 4];
-    rightText = String((eyeMenuIndex % 4) + 1) + "/4";
+    constexpr const char* labels[] = {"亮度", "音量", "网络"};
+    leftText = labels[eyeMenuIndex % 3];
+    rightText = String((eyeMenuIndex % 3) + 1) + "/3";
     // Eye messages are intentionally rendered only while the energy/status
     // layer is active. Keep that layer enabled for the otherwise pure root
     // menu so its labels remain visible inside the eyes.
     avatar.setEnergyUi(1.0f, false, false);
-  } else if (eyeMenuPage == EyeMenuPage::Battery) {
-    samplePower();
-    leftText = charging ? "充电" : "电量";
-    rightText = batteryLevel >= 0 ? String(batteryLevel) + "%" : "--";
-    eyeLevel = batteryLevel >= 0 ? batteryLevel / 100.0f : 1.0f;
-    expression = charging || batteryLevel >= 55 ? ExpressionId::Listening
-                 : batteryLevel >= 20           ? ExpressionId::Curious
-                                                : ExpressionId::Sleepy;
-    avatar.setEnergyUi(eyeLevel, charging, true);
   } else if (eyeMenuPage == EyeMenuPage::Brightness) {
     leftText = "亮度";
     rightText = String(brightnessLevelIndex() + 1) + "/4";
@@ -861,11 +788,11 @@ void handleEyeMenuInput(uint32_t nowMs) {
         reached(nowMs, eyeMenuAClickDeadlineMs)) {
       eyeMenuAClickCount = 0;
       eyeMenuAClickDeadlineMs = 0;
-      eyeMenuIndex = (eyeMenuIndex + 1) % 4;
+      eyeMenuIndex = (eyeMenuIndex + 1) % 3;
       startVibration(85, 22);
       playUiSound(UiSound::Next);
       renderEyeMenu(nowMs);
-      Serial.printf("Eye menu selection: %u/4\n", eyeMenuIndex + 1);
+      Serial.printf("Eye menu selection: %u/3\n", eyeMenuIndex + 1);
     }
     return;
   }
@@ -881,12 +808,6 @@ void handleEyeMenuInput(uint32_t nowMs) {
     renderEyeMenu(nowMs);
     return;
   }
-  if (eyeMenuPage == EyeMenuPage::Battery) {
-    startVibration(70, 18);
-    renderEyeMenu(nowMs);
-    return;
-  }
-
   if (eyeMenuAClickCount == 0 ||
       !reached(nowMs, eyeMenuAClickDeadlineMs)) {
     ++eyeMenuAClickCount;
@@ -1208,7 +1129,6 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
       Serial.println("Volume range: 0-160");
     } else {
       settings.soundVolume = static_cast<uint8_t>(value);
-      soundChangedMs = nowMs;
       saveSettings();
       uiSounds.setVolume(settings.soundVolume);
       showStatus(nowMs);
@@ -1315,12 +1235,14 @@ void handleProductTouch(uint32_t nowMs) {
       avatar.releaseTouch();
       avatar.setSwipeOffset(0.0f, deltaY, 0);
       if (!gestureCommitted && abs(deltaY) >= kGestureCommitPx) {
-        trigger(deltaY > 0 ? ExpressionId::Sleepy
-                           : ExpressionId::Surprised,
-                nowMs, kSwipeTransitionMs);
+        if (deltaY > 0) {
+          showStatus(nowMs);
+        } else {
+          trigger(ExpressionId::Surprised, nowMs, kSwipeTransitionMs);
+        }
         gestureCommitted = true;
-        Serial.printf("Vertical swipe commit: %s dy=%d\n",
-                      avatar.activeName(), deltaY);
+        Serial.printf("Vertical swipe action: %s dy=%d\n",
+                      deltaY > 0 ? "battery" : avatar.activeName(), deltaY);
       }
       return;
     }
@@ -1553,79 +1475,8 @@ void handleStatusInput(uint32_t nowMs) {
     avatar.releaseTouch();
   }
 
-  if (!M5.BtnA.isPressed()) {
-    if (!soundAdjustmentArmed) {
-      soundAdjustmentArmed = true;
-      soundRepeatAtMs = 0;
-      soundHoldRepeated = false;
-    }
-  } else if (soundAdjustmentArmed) {
-    if (M5.BtnA.wasPressed() || soundRepeatAtMs == 0) {
-      soundRepeatAtMs = nowMs + kSoundStatusHoldDelayMs;
-      soundHoldRepeated = false;
-    } else if (reached(nowMs, soundRepeatAtMs)) {
-      cycleSoundVolume(nowMs);
-      soundHoldRepeated = true;
-      soundRepeatAtMs = nowMs + kSoundStatusRepeatMs;
-    }
-  }
-
-  if (M5.BtnB.wasPressed()) {
-    brightnessRepeatAtMs = nowMs + kBrightnessStatusHoldDelayMs;
-    brightnessHoldRepeated = false;
-  }
-  if (M5.BtnB.isPressed()) {
-    if (brightnessRepeatAtMs == 0) {
-      brightnessRepeatAtMs = nowMs + kBrightnessStatusHoldDelayMs;
-    } else if (reached(nowMs, brightnessRepeatAtMs)) {
-      cycleBrightness(nowMs);
-      brightnessHoldRepeated = true;
-      brightnessRepeatAtMs = nowMs + kBrightnessStatusRepeatMs;
-    }
-  }
-
-  const bool brightnessClicked = M5.BtnB.wasClicked();
-  const bool brightnessReleased = M5.BtnB.wasReleased();
-  const bool soundClicked = M5.BtnA.wasClicked();
-  const bool soundReleased = M5.BtnA.wasReleased();
-  if (touch.wasClicked()) {
+  if (touch.wasClicked() || M5.BtnB.wasClicked()) {
     noteActivity(nowMs);
-    hideStatus();
-  } else if (soundClicked && !soundHoldRepeated) {
-    noteActivity(nowMs);
-    if (statusAClickCount == 0 ||
-        !reached(nowMs, statusAClickDeadlineMs)) {
-      ++statusAClickCount;
-    } else {
-      statusAClickCount = 1;
-    }
-    statusAClickDeadlineMs = nowMs + kStatusTripleClickWindowMs;
-    showStatus(nowMs);
-    if (statusAClickCount >= 3) {
-      settings.showBatteryPercent = !settings.showBatteryPercent;
-      saveSettings();
-      statusAClickCount = 0;
-      statusAClickDeadlineMs = 0;
-      startVibration(125, 38);
-      playUiSound(settings.showBatteryPercent ? UiSound::Confirm
-                                              : UiSound::Close);
-      showStatus(nowMs);
-      Serial.printf("Battery percentage in eye: %s\n",
-                    settings.showBatteryPercent ? "on" : "off");
-    }
-  } else if (brightnessClicked && !brightnessHoldRepeated) {
-    cycleBrightness(nowMs);
-  }
-  if (brightnessReleased) {
-    brightnessRepeatAtMs = 0;
-    brightnessHoldRepeated = false;
-  }
-  if (soundReleased) {
-    soundRepeatAtMs = 0;
-    soundHoldRepeated = false;
-  }
-  if (statusMode && statusAClickCount > 0 &&
-      reached(nowMs, statusAClickDeadlineMs)) {
     hideStatus();
   }
 }

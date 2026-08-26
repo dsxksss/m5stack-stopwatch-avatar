@@ -21,7 +21,7 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 - expressions are selected by touch, motion, battery, charging and network context rather than a user-controlled expression catalogue;
 - original soft pop, boop and blip effects are synthesized for expressions, navigation, energy status, brightness and wake events, with automatic quiet-hours muting;
 - hold A+B to enter hardware diagnostics;
-- hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse battery, brightness, sound and network, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; battery and network remain expressive states, while eye opening directly conveys brightness and volume;
+- hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse brightness, sound and network, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; swipe down to check battery, while eye opening directly conveys brightness and volume;
 - dim after 45 seconds of inactivity and clear/switch the AMOLED off after 60 seconds, with touch, button and motion wake;
 - persist brightness, idle timeouts and quiet hours in NVS;
 - use the RX8130 RTC for quiet-hour sleepy behavior, with serial time setting;
@@ -36,12 +36,12 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 | Hold and move | Eyes and head continuously follow the touch point |
 | Long press | `angry` |
 | Swipe left / right | Give a brief curious or confused reaction based on direction, then restore the current state |
-| Swipe up / down | `surprised` / `sleepy` |
+| Swipe up | `surprised` |
+| Swipe down | Show battery percentage and charging state, then restore automatically; B returns early |
 | Slowly tilt the device | Gaze continuously follows the tilt direction |
 | Quickly move the device | Add a brief inertial eye/head response without changing expression |
 | A / B on the normal face | Hold A to open the eye menu; short A/B presses do not switch expressions |
 | A / B in the root menu | Click A to browse, double-click A to confirm, and press B to close |
-| Battery page | Show percentage and map remaining charge to right-eye opening; B returns |
 | Brightness / sound page | Click A to cycle levels quickly, B returns; right-eye opening follows the level |
 | Network page | A root-menu double click only opens status; once inside, hold A again for about two seconds to start pairing. B cancels or returns, and saved credentials remain until a new connection succeeds |
 | Hold A+B | Enter / exit hardware diagnostics |

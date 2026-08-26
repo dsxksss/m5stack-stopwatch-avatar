@@ -21,8 +21,8 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 - A/B buttons browse expressions, with vibration feedback;
 - original soft pop, boop and blip effects are synthesized for expressions, navigation, energy status, brightness and wake events, with automatic quiet-hours muting;
 - hold A+B to enter hardware diagnostics;
-- hold A for an immersive status expression: the left eye shows a softly feathered label while the right eye's opening conveys battery, sound volume or brightness; triple-press A to toggle the saved battery percentage label, hold A again to cycle mute plus four sound levels, or hold B to cycle four brightness levels; after a moment the character winds up, blinks, shakes twice and settles back into its pure expression;
-- hold B to enter an expression-led Wi-Fi mode; KK exposes a temporary `KK-XXXX` captive portal, shows pairing/connecting/connected/failure through its eyes, and stores submitted credentials only in device NVS;
+- hold A to open a minimal menu made entirely from KK's eyes; click A to browse battery, brightness, sound and network, double-click A to confirm, and press B to go back. Battery and network remain expressive states, while eye opening directly conveys brightness and volume;
+- hold B to enter a read-only, expression-led Wi-Fi status mode; after releasing B, hold it again for about two seconds to explicitly open the temporary `KK-XXXX` captive portal. KK shows pairing/connecting/connected/failure through its eyes, and only replaces saved credentials after a new network connects successfully;
 - dim after 45 seconds of inactivity and clear/switch the AMOLED off after 60 seconds, with touch, button and motion wake;
 - persist brightness, idle timeouts and quiet hours in NVS;
 - use the RX8130 RTC for quiet-hour sleepy behavior, with serial time setting;
@@ -41,10 +41,13 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 | Slowly tilt the device | Gaze continuously follows the tilt direction |
 | Quickly move the device | Add a brief inertial eye/head response without changing expression |
 | A / B | Previous / next expression |
-| Hold A | Open immersive status; release and hold A again to cycle mute plus four sound levels, or hold B for brightness |
-| Triple-press A in status | Show / hide the saved battery percentage label in the right eye |
-| Hold B | Enter Wi-Fi mode; connect a phone to `KK-XXXX` with password `kkfriend` and follow the captive portal |
-| A / B in Wi-Fi mode | Return to the current expression / start or restart pairing |
+| Hold A | Open the eye menu |
+| A / B in the root menu | Click A to browse, double-click A to confirm, and press B to close |
+| Battery page | Show percentage and map remaining charge to right-eye opening; B returns |
+| Brightness / sound page | Click A to cycle levels quickly, B returns; right-eye opening follows the level |
+| Network page | Double-click A to explicitly start pairing; B cancels or returns, and saved credentials remain until a new connection succeeds |
+| Hold B | Open Wi-Fi status without changing the current connection |
+| A / B in Wi-Fi mode | A returns to the current expression; a B click shows the pairing hint; hold B for about two seconds to start pairing |
 | Hold A+B | Enter / exit hardware diagnostics |
 
 `idle`, `listening` and `thinking` are persistent base states. Other reactions return to the previously active base state when their animation finishes instead of always returning to idle.
@@ -111,7 +114,7 @@ screen on
 screen off
 ```
 
-The RTC stores device-local time and does not apply time zones automatically. `dim` and `screenoff` use seconds; brightness, timeouts, quiet hours and Wi-Fi credentials persist in NVS. The pairing portal accepts 2.4 GHz networks; it runs for at most five minutes and never prints the submitted password.
+The RTC stores device-local time and does not apply time zones automatically. `dim` and `screenoff` use seconds; brightness, timeouts, quiet hours and Wi-Fi credentials persist in NVS. In `KK-XXXX`, `XXXX` is the last four hexadecimal digits derived from this device's unique chip ID, used only to distinguish nearby KK devices. The pairing portal accepts 2.4 GHz networks, runs for at most five minutes and never prints the submitted password. A candidate network must connect successfully before it replaces the saved credentials; otherwise KK restores the previous network.
 
 ## Repository map
 

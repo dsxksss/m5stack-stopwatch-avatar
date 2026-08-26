@@ -45,7 +45,7 @@ class WifiPairing {
 
   void configureServer();
   void beginConnection(const String& ssid, const String& password,
-                       uint32_t nowMs);
+                       uint32_t nowMs, bool candidate = false);
   void stopPortalServices();
   void setState(State next);
   void sendPortalPage(const String& message = "");
@@ -60,6 +60,7 @@ class WifiPairing {
   bool serverConfigured_ = false;
   bool portalServicesActive_ = false;
   bool credentialsReady_ = false;
+  bool candidateConnection_ = false;
   String ssid_;
   String password_;
   String pendingSsid_;

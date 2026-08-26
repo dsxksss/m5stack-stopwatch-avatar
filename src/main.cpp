@@ -35,6 +35,8 @@ constexpr uint32_t kBrightnessStatusRepeatMs = 320;
 constexpr uint32_t kSoundStatusHoldDelayMs = 420;
 constexpr uint32_t kSoundStatusRepeatMs = 450;
 constexpr uint32_t kStatusTripleClickWindowMs = 480;
+constexpr uint32_t kWifiPairingHoldMs = 1800;
+constexpr uint32_t kEyeMenuClickWindowMs = 420;
 constexpr uint32_t kPowerSampleIntervalMs = 5000;
 constexpr uint32_t kRtcSampleIntervalMs = 30000;
 constexpr uint32_t kDimRenderIntervalMs = 50;
@@ -46,6 +48,13 @@ constexpr uint8_t kLowBatteryThreshold = 15;
 
 enum class GestureAxis : uint8_t { None, Horizontal, Vertical };
 enum class ScreenPowerState : uint8_t { Bright, Dimmed, Sleeping };
+enum class EyeMenuPage : uint8_t {
+  Root,
+  Battery,
+  Brightness,
+  Sound,
+  Wifi,
+};
 
 struct CompanionSettings {
   uint8_t brightness = kDefaultBrightness;
@@ -70,6 +79,10 @@ bool diagnosticMode = false;
 bool diagnosticToggleLatched = false;
 bool statusMode = false;
 bool wifiMode = false;
+bool eyeMenuMode = false;
+bool wifiPairingInputArmed = false;
+bool wifiPairingHoldLatched = false;
+bool eyeMenuInputArmed = false;
 bool rtcValid = false;
 bool chargingStateKnown = false;
 bool charging = false;
@@ -86,6 +99,7 @@ uint32_t brightnessRepeatAtMs = 0;
 uint32_t soundChangedMs = 0;
 uint32_t soundRepeatAtMs = 0;
 uint32_t statusAClickDeadlineMs = 0;
+uint32_t eyeMenuAClickDeadlineMs = 0;
 uint32_t lastPowerSampleMs = 0;
 uint32_t lastRtcSampleMs = 0;
 uint32_t lastDimRenderMs = 0;
@@ -105,6 +119,8 @@ bool brightnessHoldRepeated = false;
 bool soundHoldRepeated = false;
 bool soundAdjustmentArmed = false;
 uint8_t statusAClickCount = 0;
+uint8_t eyeMenuAClickCount = 0;
+uint8_t eyeMenuIndex = 0;
 uint8_t motionWakeSampleCount = 0;
 String lastDiagnosticEvent = "Waiting for input";
 String serialCommand;
@@ -116,9 +132,13 @@ m5::rtc_datetime_t rtcDateTime;
 ScreenPowerState screenPowerState = ScreenPowerState::Bright;
 ExpressionId statusReturnExpression = ExpressionId::Idle;
 ExpressionId wifiReturnExpression = ExpressionId::Idle;
+ExpressionId eyeMenuReturnExpression = ExpressionId::Idle;
+EyeMenuPage eyeMenuPage = EyeMenuPage::Root;
 
 void setFont();
 void startVibration(uint8_t strength, uint16_t durationMs);
+void renderEyeMenu(uint32_t nowMs);
+void closeEyeMenu(uint32_t nowMs);
 
 bool reached(uint32_t now, uint32_t deadline) {
   return deadline != 0 && static_cast<int32_t>(now - deadline) >= 0;
@@ -469,8 +489,8 @@ void renderWifiFace(uint32_t nowMs) {
 
   switch (wifiPairing.state()) {
     case WifiPairing::State::Offline:
-      leftText = "配网";
-      rightText = wifiPairing.accessPointCode();
+      leftText = "长按";
+      rightText = "配网";
       expression = ExpressionId::Curious;
       break;
     case WifiPairing::State::Connecting:
@@ -479,7 +499,7 @@ void renderWifiFace(uint32_t nowMs) {
       expression = ExpressionId::Thinking;
       break;
     case WifiPairing::State::Portal:
-      leftText = "配网";
+      leftText = "KK";
       rightText = wifiPairing.accessPointCode();
       expression = ExpressionId::Curious;
       break;
@@ -507,12 +527,10 @@ void enterWifiMode(uint32_t nowMs) {
   if (!wifiMode) {
     wifiReturnExpression = avatar.baseExpression();
     wifiMode = true;
+    wifiPairingInputArmed = false;
+    wifiPairingHoldLatched = false;
     playUiSound(UiSound::Open);
     startVibration(120, 34);
-  }
-  if (wifiPairing.state() == WifiPairing::State::Offline ||
-      wifiPairing.state() == WifiPairing::State::Failed) {
-    wifiPairing.startPortal(nowMs);
   }
   wifiPairing.consumeStateChanged();
   renderWifiFace(nowMs);
@@ -526,6 +544,8 @@ void leaveWifiMode(uint32_t nowMs) {
   if (!wifiMode) return;
   if (wifiPairing.portalActive()) wifiPairing.cancelPortal();
   wifiMode = false;
+  wifiPairingInputArmed = false;
+  wifiPairingHoldLatched = false;
   avatar.releaseTouch();
   avatar.clearEnergyUi();
   avatar.show(wifiReturnExpression, nowMs, false, 260);
@@ -546,8 +566,14 @@ void updateWifiPairing(uint32_t nowMs) {
                   settings.wifiSsid.c_str());
   }
   if (!wifiPairing.consumeStateChanged()) return;
-  if (!wifiMode) return;
-  renderWifiFace(nowMs);
+  const bool menuWifiVisible =
+      eyeMenuMode && eyeMenuPage == EyeMenuPage::Wifi;
+  if (!wifiMode && !menuWifiVisible) return;
+  if (menuWifiVisible) {
+    renderEyeMenu(nowMs);
+  } else {
+    renderWifiFace(nowMs);
+  }
   if (wifiPairing.connected()) {
     startVibration(150, 45);
     playUiSound(UiSound::Confirm);
@@ -568,21 +594,40 @@ void handleWifiInput(uint32_t nowMs) {
     leaveWifiMode(nowMs);
     return;
   }
-  if (M5.BtnB.wasClicked()) {
+
+  // The hold used to enter Wi-Fi mode must be released before pairing can arm.
+  if (!wifiPairingInputArmed && !M5.BtnB.isPressed()) {
+    wifiPairingInputArmed = true;
+  }
+  if (M5.BtnB.wasReleased()) wifiPairingHoldLatched = false;
+
+  if (wifiPairingInputArmed && !wifiPairingHoldLatched &&
+      M5.BtnB.pressedFor(kWifiPairingHoldMs)) {
+    wifiPairingHoldLatched = true;
     noteActivity(nowMs);
     if (!wifiPairing.portalActive()) {
       wifiPairing.startPortal(nowMs);
       wifiPairing.consumeStateChanged();
       renderWifiFace(nowMs);
       playUiSound(UiSound::Open);
+      startVibration(150, 42);
+    }
+    return;
+  }
+
+  if (M5.BtnB.wasClicked()) {
+    noteActivity(nowMs);
+    startVibration(95, 24);
+    if (!wifiPairing.portalActive()) {
+      avatar.setEyeMessage("长按", "配网", nowMs, 1500);
+      avatar.invalidate();
     } else {
-      startVibration(95, 24);
       renderWifiFace(nowMs);
     }
   }
 }
 
-void cycleBrightness(uint32_t nowMs) {
+void cycleBrightness(uint32_t nowMs, bool refreshStatus = true) {
   constexpr uint8_t levels[] = {60, 100, 150, 220};
   uint8_t next = levels[0];
   uint8_t nextIndex = 0;
@@ -598,12 +643,12 @@ void cycleBrightness(uint32_t nowMs) {
   saveSettings();
   M5.Display.setBrightness(settings.brightness);
   startVibration(115, 30);
-  showStatus(nowMs);
+  if (refreshStatus) showStatus(nowMs);
   playUiSound(UiSound::Brightness, nextIndex);
   Serial.printf("Brightness saved: %u\n", settings.brightness);
 }
 
-void cycleSoundVolume(uint32_t nowMs) {
+void cycleSoundVolume(uint32_t nowMs, bool refreshStatus = true) {
   const uint8_t currentIndex = soundVolumeLevelIndex();
   const uint8_t nextIndex =
       (currentIndex + 1) %
@@ -613,13 +658,213 @@ void cycleSoundVolume(uint32_t nowMs) {
   saveSettings();
   uiSounds.setVolume(settings.soundVolume);
   startVibration(105, 28);
-  showStatus(nowMs);
+  if (refreshStatus) showStatus(nowMs);
   if (settings.soundVolume > 0) {
     playUiSound(UiSound::Brightness,
                 std::min<uint8_t>(nextIndex - 1, 3));
   }
   Serial.printf("Sound volume saved: %u (%s)\n", settings.soundVolume,
                 nextIndex == 0 ? "muted" : String(nextIndex).c_str());
+}
+
+void renderEyeMenu(uint32_t nowMs) {
+  if (!eyeMenuMode) return;
+
+  avatar.clearEnergyUi();
+  String leftText;
+  String rightText;
+  float eyeLevel = 1.0f;
+  ExpressionId expression = ExpressionId::Curious;
+
+  if (eyeMenuPage == EyeMenuPage::Root) {
+    constexpr const char* labels[] = {"电量", "亮度", "音量", "网络"};
+    leftText = labels[eyeMenuIndex % 4];
+    rightText = String((eyeMenuIndex % 4) + 1) + "/4";
+  } else if (eyeMenuPage == EyeMenuPage::Battery) {
+    samplePower();
+    leftText = charging ? "充电" : "电量";
+    rightText = batteryLevel >= 0 ? String(batteryLevel) + "%" : "--";
+    eyeLevel = batteryLevel >= 0 ? batteryLevel / 100.0f : 1.0f;
+    expression = charging || batteryLevel >= 55 ? ExpressionId::Listening
+                 : batteryLevel >= 20           ? ExpressionId::Curious
+                                                : ExpressionId::Sleepy;
+    avatar.setEnergyUi(eyeLevel, charging, true);
+  } else if (eyeMenuPage == EyeMenuPage::Brightness) {
+    leftText = "亮度";
+    rightText = String(brightnessLevelIndex() + 1) + "/4";
+    eyeLevel = (brightnessLevelIndex() + 1) / 4.0f;
+    avatar.setEnergyUi(eyeLevel, false, false);
+  } else if (eyeMenuPage == EyeMenuPage::Sound) {
+    const uint8_t level = soundVolumeLevelIndex();
+    leftText = level == 0 ? "静音" : "音量";
+    rightText = String(level) + "/4";
+    eyeLevel = level / 4.0f;
+    avatar.setEnergyUi(eyeLevel, false, false);
+  } else {
+    switch (wifiPairing.state()) {
+      case WifiPairing::State::Offline:
+        leftText = "未连";
+        rightText = "双击";
+        break;
+      case WifiPairing::State::Connecting:
+        leftText = "连接";
+        rightText = "...";
+        eyeLevel = 0.58f;
+        expression = ExpressionId::Thinking;
+        break;
+      case WifiPairing::State::Portal:
+        leftText = "KK";
+        rightText = wifiPairing.accessPointCode();
+        break;
+      case WifiPairing::State::Connected:
+        leftText = "已连";
+        rightText = "双击";
+        eyeLevel = wifiPairing.signalLevel();
+        expression = ExpressionId::Listening;
+        break;
+      case WifiPairing::State::Failed:
+        leftText = "失败";
+        rightText = "双击";
+        expression = ExpressionId::Sad;
+        break;
+    }
+    avatar.setEnergyUi(eyeLevel, false, false);
+  }
+
+  avatar.setEyeMessage(leftText, rightText, nowMs, 10UL * 60UL * 1000UL);
+  avatar.play(expression, nowMs, AvatarEngine::PlaybackMode::PingPong, false,
+              220);
+  avatar.invalidate();
+}
+
+void openEyeMenu(uint32_t nowMs) {
+  noteActivity(nowMs);
+  if (statusMode) hideStatus();
+  if (wifiMode) leaveWifiMode(nowMs);
+  if (!eyeMenuMode) {
+    eyeMenuReturnExpression = avatar.baseExpression();
+    eyeMenuMode = true;
+    eyeMenuPage = EyeMenuPage::Root;
+    eyeMenuIndex = 0;
+    eyeMenuAClickCount = 0;
+    eyeMenuAClickDeadlineMs = 0;
+    eyeMenuInputArmed = false;
+    playUiSound(UiSound::Open);
+    startVibration(120, 34);
+  }
+  renderEyeMenu(nowMs);
+  Serial.println("Eye menu opened");
+}
+
+void closeEyeMenu(uint32_t nowMs) {
+  if (!eyeMenuMode) return;
+  if (wifiPairing.portalActive()) wifiPairing.cancelPortal();
+  eyeMenuMode = false;
+  eyeMenuPage = EyeMenuPage::Root;
+  eyeMenuAClickCount = 0;
+  eyeMenuAClickDeadlineMs = 0;
+  eyeMenuInputArmed = false;
+  avatar.releaseTouch();
+  avatar.clearEnergyUi();
+  avatar.show(eyeMenuReturnExpression, nowMs, false, 240);
+  avatar.invalidate();
+  playUiSound(UiSound::Close);
+  Serial.println("Eye menu closed");
+}
+
+void openSelectedEyeMenuPage(uint32_t nowMs) {
+  eyeMenuPage = static_cast<EyeMenuPage>(eyeMenuIndex + 1);
+  eyeMenuAClickCount = 0;
+  eyeMenuAClickDeadlineMs = 0;
+  startVibration(125, 34);
+  playUiSound(UiSound::Confirm);
+  renderEyeMenu(nowMs);
+  Serial.printf("Eye menu page opened: %u\n",
+                static_cast<unsigned>(eyeMenuPage));
+}
+
+void handleEyeMenuInput(uint32_t nowMs) {
+  const auto touch = M5.Touch.getDetail(0);
+  if (touch.wasPressed()) noteActivity(nowMs);
+  if (touch.isPressed()) avatar.setTouchTarget(touch.x, touch.y);
+  if (touch.wasReleased()) avatar.releaseTouch();
+
+  if (!eyeMenuInputArmed) {
+    if (!M5.BtnA.isPressed()) eyeMenuInputArmed = true;
+    return;
+  }
+
+  if (M5.BtnB.wasClicked()) {
+    noteActivity(nowMs);
+    eyeMenuAClickCount = 0;
+    eyeMenuAClickDeadlineMs = 0;
+    if (eyeMenuPage == EyeMenuPage::Root) {
+      closeEyeMenu(nowMs);
+    } else {
+      if (eyeMenuPage == EyeMenuPage::Wifi && wifiPairing.portalActive()) {
+        wifiPairing.cancelPortal();
+        wifiPairing.consumeStateChanged();
+      }
+      eyeMenuPage = EyeMenuPage::Root;
+      startVibration(95, 24);
+      playUiSound(UiSound::Close);
+      renderEyeMenu(nowMs);
+    }
+    return;
+  }
+
+  if (!eyeMenuInputArmed || !M5.BtnA.wasClicked()) {
+    if (eyeMenuPage == EyeMenuPage::Root && eyeMenuAClickCount == 1 &&
+        reached(nowMs, eyeMenuAClickDeadlineMs)) {
+      eyeMenuAClickCount = 0;
+      eyeMenuAClickDeadlineMs = 0;
+      eyeMenuIndex = (eyeMenuIndex + 1) % 4;
+      startVibration(85, 22);
+      playUiSound(UiSound::Next);
+      renderEyeMenu(nowMs);
+      Serial.printf("Eye menu selection: %u/4\n", eyeMenuIndex + 1);
+    }
+    return;
+  }
+
+  noteActivity(nowMs);
+  if (eyeMenuPage == EyeMenuPage::Brightness) {
+    cycleBrightness(nowMs, false);
+    renderEyeMenu(nowMs);
+    return;
+  }
+  if (eyeMenuPage == EyeMenuPage::Sound) {
+    cycleSoundVolume(nowMs, false);
+    renderEyeMenu(nowMs);
+    return;
+  }
+  if (eyeMenuPage == EyeMenuPage::Battery) {
+    startVibration(70, 18);
+    renderEyeMenu(nowMs);
+    return;
+  }
+
+  if (eyeMenuAClickCount == 0 ||
+      !reached(nowMs, eyeMenuAClickDeadlineMs)) {
+    ++eyeMenuAClickCount;
+  } else {
+    eyeMenuAClickCount = 1;
+  }
+  eyeMenuAClickDeadlineMs = nowMs + kEyeMenuClickWindowMs;
+
+  if (eyeMenuAClickCount < 2) return;
+  eyeMenuAClickCount = 0;
+  eyeMenuAClickDeadlineMs = 0;
+  if (eyeMenuPage == EyeMenuPage::Root) {
+    openSelectedEyeMenuPage(nowMs);
+  } else if (eyeMenuPage == EyeMenuPage::Wifi &&
+             !wifiPairing.portalActive()) {
+    wifiPairing.startPortal(nowMs);
+    wifiPairing.consumeStateChanged();
+    startVibration(150, 42);
+    playUiSound(UiSound::Open);
+    renderEyeMenu(nowMs);
+  }
 }
 
 void setFont() {
@@ -744,7 +989,7 @@ void updateCompanionSensors(uint32_t nowMs) {
     } else if (charging != previousCharging) {
       Serial.printf("Charging state changed: %s\n",
                     charging ? "connected" : "disconnected");
-      if (!diagnosticMode && !statusMode && !wifiMode &&
+      if (!diagnosticMode && !statusMode && !wifiMode && !eyeMenuMode &&
           screenPowerState != ScreenPowerState::Sleeping) {
         trigger(charging ? ExpressionId::Excited : ExpressionId::Curious,
                 nowMs, 220);
@@ -755,6 +1000,7 @@ void updateCompanionSensors(uint32_t nowMs) {
   const bool lowBattery = batteryLevel >= 0 &&
                           batteryLevel <= kLowBatteryThreshold && !charging;
   if (lowBattery && !diagnosticMode && !statusMode && !wifiMode &&
+      !eyeMenuMode &&
       screenPowerState != ScreenPowerState::Sleeping &&
       (lastLowBatteryReminderMs == 0 ||
        nowMs - lastLowBatteryReminderMs >= kLowBatteryReminderIntervalMs)) {
@@ -766,7 +1012,7 @@ void updateCompanionSensors(uint32_t nowMs) {
 }
 
 void updateDisplayPower(uint32_t nowMs) {
-  if (wifiMode) {
+  if (wifiMode || eyeMenuMode) {
     lastActivityMs = nowMs;
     return;
   }
@@ -1199,6 +1445,7 @@ void refreshDiagnosticSensors() {
 void setDiagnosticMode(bool enabled) {
   if (statusMode) hideStatus();
   if (wifiMode) leaveWifiMode(millis());
+  if (eyeMenuMode) closeEyeMenu(millis());
   diagnosticMode = enabled;
   noteActivity(millis());
   stopVibration();
@@ -1426,14 +1673,17 @@ void loop() {
   } else if (wifiMode) {
     handleWifiInput(nowMs);
     if (wifiMode) avatar.update(nowMs);
+  } else if (eyeMenuMode) {
+    handleEyeMenuInput(nowMs);
+    if (eyeMenuMode) avatar.update(nowMs);
   } else {
-    const bool showStatusRequested =
+    const bool showMenuRequested =
         M5.BtnA.wasHold() && !M5.BtnB.isPressed();
     const bool showWifiRequested =
         M5.BtnB.wasHold() && !M5.BtnA.isPressed();
 
-    if (showStatusRequested) {
-      showStatus(nowMs);
+    if (showMenuRequested) {
+      openEyeMenu(nowMs);
     } else if (showWifiRequested) {
       enterWifiMode(nowMs);
     } else if (M5.BtnA.wasClicked()) {
@@ -1447,7 +1697,7 @@ void loop() {
       startVibration(125, 35);
       playUiSound(UiSound::Next);
     }
-    if (!statusMode && !wifiMode) {
+    if (!statusMode && !wifiMode && !eyeMenuMode) {
       handleProductTouch(nowMs);
       handleImuInteraction(nowMs);
 

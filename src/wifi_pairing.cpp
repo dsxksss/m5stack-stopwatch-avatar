@@ -42,16 +42,17 @@ void WifiPairing::setState(State next) {
 }
 
 void WifiPairing::beginConnection(const String& ssid,
-                                  const String& password, uint32_t nowMs) {
+                                  const String& password, uint32_t nowMs,
+                                  bool candidate) {
   stopPortalServices();
-  ssid_ = ssid;
-  password_ = password;
+  candidateConnection_ = candidate;
   WiFi.mode(WIFI_STA);
-  WiFi.begin(ssid_.c_str(), password_.c_str());
+  WiFi.begin(ssid.c_str(), password.c_str());
   connectionStartedMs_ = nowMs;
   submitConnectAtMs_ = 0;
   setState(State::Connecting);
-  Serial.printf("Wi-Fi connecting: ssid=%s\n", ssid_.c_str());
+  Serial.printf("Wi-Fi connecting: ssid=%s%s\n", ssid.c_str(),
+                candidate ? " (candidate)" : "");
 }
 
 void WifiPairing::configureServer() {
@@ -134,6 +135,7 @@ void WifiPairing::forget() {
   pendingSsid_ = "";
   pendingPassword_ = "";
   credentialsReady_ = false;
+  candidateConnection_ = false;
   connectionStartedMs_ = 0;
   submitConnectAtMs_ = 0;
   WiFi.mode(WIFI_OFF);
@@ -146,7 +148,7 @@ void WifiPairing::update(uint32_t nowMs) {
     dnsServer_.processNextRequest();
     webServer_.handleClient();
     if (reached(nowMs, submitConnectAtMs_)) {
-      beginConnection(pendingSsid_, pendingPassword_, nowMs);
+      beginConnection(pendingSsid_, pendingPassword_, nowMs, true);
       return;
     }
     if (portalStartedMs_ != 0 &&
@@ -160,6 +162,12 @@ void WifiPairing::update(uint32_t nowMs) {
   const wl_status_t link = WiFi.status();
   if (link == WL_CONNECTED) {
     if (state_ != State::Connected) {
+      if (candidateConnection_) {
+        ssid_ = pendingSsid_;
+        password_ = pendingPassword_;
+        credentialsReady_ = true;
+        candidateConnection_ = false;
+      }
       setState(State::Connected);
       Serial.printf("Wi-Fi connected: ssid=%s ip=%s rssi=%ld\n",
                     WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(),
@@ -175,16 +183,32 @@ void WifiPairing::update(uint32_t nowMs) {
     Serial.println("Wi-Fi link lost; reconnecting");
   } else if (state_ == State::Connecting && connectionStartedMs_ != 0 &&
              nowMs - connectionStartedMs_ >= kConnectTimeoutMs) {
+    if (candidateConnection_ && hasCredentials()) {
+      Serial.printf(
+          "Wi-Fi candidate timed out: ssid=%s; restoring saved network\n",
+          pendingSsid_.c_str());
+      candidateConnection_ = false;
+      pendingSsid_ = "";
+      pendingPassword_ = "";
+      beginConnection(ssid_, password_, nowMs);
+      return;
+    }
+    const String failedSsid =
+        candidateConnection_ ? pendingSsid_ : ssid_;
+    candidateConnection_ = false;
     setState(State::Failed);
-    Serial.printf("Wi-Fi connection timed out: ssid=%s\n", ssid_.c_str());
+    Serial.printf("Wi-Fi connection timed out: ssid=%s\n",
+                  failedSsid.c_str());
   }
 }
 
 bool WifiPairing::takeNewCredentials(String& ssid, String& password) {
   if (!credentialsReady_) return false;
   credentialsReady_ = false;
-  ssid = pendingSsid_;
-  password = pendingPassword_;
+  ssid = ssid_;
+  password = password_;
+  pendingSsid_ = "";
+  pendingPassword_ = "";
   return true;
 }
 
@@ -292,7 +316,7 @@ void WifiPairing::handleCredentialSave() {
   }
   pendingSsid_ = submittedSsid;
   pendingPassword_ = submittedPassword;
-  credentialsReady_ = true;
+  credentialsReady_ = false;
   submitConnectAtMs_ = millis() + 650;
   webServer_.send(
       200, "text/html; charset=utf-8",

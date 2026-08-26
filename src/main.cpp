@@ -21,7 +21,7 @@ constexpr uint16_t kImuCalibrationSamples = 30;
 constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
-constexpr char kFirmwareVersion[] = "0.6.1";
+constexpr char kFirmwareVersion[] = "0.6.2";
 constexpr char kPreferencesNamespace[] = "kk-avatar";
 constexpr uint8_t kSettingsSchemaVersion = 5;
 constexpr uint8_t kDefaultBrightness = 150;
@@ -401,6 +401,12 @@ void noteActivity(uint32_t nowMs) {
 
 void showStatus(uint32_t nowMs) {
   noteActivity(nowMs);
+  // A downward swipe switches the main loop into status mode before the
+  // normal touch handler can observe finger-up. Release its drag target here
+  // so the battery expression recenters instead of remaining below screen.
+  avatar.releaseSwipe();
+  gestureAxis = GestureAxis::None;
+  gestureCommitted = false;
   samplePower();
   sampleRtc();
   avatar.setEnergyUi(batteryLevel >= 0 ? batteryLevel / 100.0f : 1.0f,
@@ -440,6 +446,9 @@ void hideStatus() {
   statusReactionStartsAtMs = 0;
   statusDismissesAtMs = 0;
   avatar.releaseTouch();
+  avatar.releaseSwipe();
+  gestureAxis = GestureAxis::None;
+  gestureCommitted = false;
   avatar.clearEnergyUi();
   avatar.show(statusReturnExpression, millis(), false, 260);
   avatar.invalidate();
@@ -1599,6 +1608,7 @@ void handleStatusInput(uint32_t nowMs) {
   }
   if (touch.wasReleased()) {
     avatar.releaseTouch();
+    avatar.releaseSwipe();
   }
 
   if (touch.wasClicked() || M5.BtnB.wasClicked()) {

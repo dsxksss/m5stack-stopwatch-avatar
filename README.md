@@ -45,7 +45,7 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 | Brightness / sound page | Click A to cycle levels quickly, B returns; right-eye opening follows the level |
 | Scheduled quiet page | Disabled by default. Click A to toggle and save the `22:00–07:00` mute window, B returns; disabling mute does not disable the sleepy night expression |
 | Network page | The resting view only reports Wi-Fi status. Hold A to reveal the pair/change-network prompt and keep holding for about two seconds to start pairing; B cancels or returns, and saved credentials remain until a new connection succeeds |
-| Version page | Read-only eye view showing firmware version `0.6.1`; B returns |
+| Version page | Read-only eye view showing firmware version `0.6.2`; B returns |
 | Hold A+B | Enter / exit hardware diagnostics |
 
 `idle`, `listening` and `thinking` are persistent base states. Other reactions return to the previously active base state when their animation finishes instead of always returning to idle.
@@ -127,7 +127,7 @@ Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight sav
 
 ## Next implementation handoff: LAN eye messages
 
-This feature is planned but not implemented in firmware `0.6.1`. Its goal is to let a phone on the same Wi-Fi send a short message that appears inside KK's eyes without introducing a conventional on-device panel.
+This feature is planned but not implemented in firmware `0.6.2`. Its goal is to let a phone on the same Wi-Fi send a short message that appears inside KK's eyes without introducing a conventional on-device panel.
 
 ### Required behavior
 

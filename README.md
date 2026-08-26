@@ -21,7 +21,7 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 - expressions are selected by touch, motion, battery, charging and network context rather than a user-controlled expression catalogue;
 - original soft pop, boop and blip effects are synthesized for expressions, navigation, energy status, brightness and wake events, with automatic quiet-hours muting;
 - hold A+B to enter hardware diagnostics;
-- hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse brightness, sound and network, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; swipe down to check battery, while eye opening directly conveys brightness and volume;
+- hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse brightness, sound, scheduled quiet mute and network, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; swipe down to check battery, while eye opening directly conveys brightness and volume;
 - dim after 45 seconds of inactivity and clear/switch the AMOLED off after 60 seconds, with touch, button and motion wake;
 - persist brightness, idle timeouts and quiet hours in NVS;
 - synchronize China Standard Time over NTP after Wi-Fi connects, write it to the RX8130 RTC, and use the RTC for quiet-hour sleepy behavior;
@@ -43,6 +43,7 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 | A / B on the normal face | Hold A to open the eye menu; short A/B presses do not switch expressions |
 | A / B in the root menu | Click A to browse, double-click A to confirm, and press B to close |
 | Brightness / sound page | Click A to cycle levels quickly, B returns; right-eye opening follows the level |
+| Scheduled quiet page | Click A to toggle and save the `22:00–07:00` mute window, B returns; disabling mute does not disable the sleepy night expression |
 | Network page | The resting view only reports Wi-Fi status. Hold A to reveal the pair/change-network prompt and keep holding for about two seconds to start pairing; B cancels or returns, and saved credentials remain until a new connection succeeds |
 | Hold A+B | Enter / exit hardware diagnostics |
 
@@ -110,7 +111,7 @@ screen on
 screen off
 ```
 
-Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight saving). KK synchronizes after Wi-Fi connects, retries after one minute on failure, and rewrites the RTC every six hours; serial time setting remains available. `dim` and `screenoff` use seconds; brightness, timeouts, quiet hours and Wi-Fi credentials persist in NVS. In `KK-XXXX`, `XXXX` is the last four hexadecimal digits derived from this device's unique chip ID, used only to distinguish nearby KK devices. The pairing portal accepts 2.4 GHz networks, runs for at most five minutes and never prints the submitted password. A candidate network must connect successfully before it replaces the saved credentials; otherwise KK restores the previous network.
+Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight saving). KK synchronizes after Wi-Fi connects, retries after one minute on failure, and rewrites the RTC every six hours; serial time setting remains available. `dim` and `screenoff` use seconds; brightness, timeouts, the scheduled-mute switch, quiet hours and Wi-Fi credentials persist in NVS. In `KK-XXXX`, `XXXX` is the last four hexadecimal digits derived from this device's unique chip ID, used only to distinguish nearby KK devices. The pairing portal accepts 2.4 GHz networks, runs for at most five minutes and never prints the submitted password. A candidate network must connect successfully before it replaces the saved credentials; otherwise KK restores the previous network.
 
 ## Repository map
 

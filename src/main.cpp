@@ -22,7 +22,7 @@ constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
 constexpr char kPreferencesNamespace[] = "kk-avatar";
-constexpr uint8_t kSettingsSchemaVersion = 4;
+constexpr uint8_t kSettingsSchemaVersion = 5;
 constexpr uint8_t kDefaultBrightness = 150;
 constexpr uint8_t kDefaultSoundVolume = 56;
 constexpr uint8_t kSoundVolumeLevels[] = {0, 32, 56, 84, 112};
@@ -33,6 +33,7 @@ constexpr uint32_t kStatusMessageHoldMs = 3400;
 constexpr uint32_t kStatusDismissAnimationMs = 900;
 constexpr uint32_t kWifiPairingHoldMs = 1800;
 constexpr uint32_t kEyeMenuClickWindowMs = 420;
+constexpr uint8_t kEyeMenuItemCount = 4;
 constexpr uint32_t kPowerSampleIntervalMs = 5000;
 constexpr uint32_t kRtcSampleIntervalMs = 30000;
 constexpr uint32_t kNetworkTimePollIntervalMs = 250;
@@ -56,6 +57,7 @@ enum class EyeMenuPage : uint8_t {
   Root,
   Brightness,
   Sound,
+  QuietMute,
   Wifi,
 };
 
@@ -68,6 +70,7 @@ struct CompanionSettings {
   uint32_t screenOffAfterMs = kDefaultScreenOffAfterMs;
   uint8_t quietStartHour = 22;
   uint8_t quietEndHour = 7;
+  bool quietMuteEnabled = true;
 };
 
 M5IOE1 ioe;
@@ -168,6 +171,7 @@ void loadSettings() {
       kDefaultScreenOffAfterMs);
   settings.quietStartHour = preferences.getUChar("quiet_start", 22);
   settings.quietEndHour = preferences.getUChar("quiet_end", 7);
+  settings.quietMuteEnabled = preferences.getBool("quiet_mute", true);
 
   // Version 1 used 60 s for dimming and 300 s for panel sleep. Migrate that
   // exact old default so existing devices now become fully dark at 60 s.
@@ -213,6 +217,10 @@ void saveSettings() {
   preferences.putUInt("off_sec", settings.screenOffAfterMs / 1000UL);
   preferences.putUChar("quiet_start", settings.quietStartHour);
   preferences.putUChar("quiet_end", settings.quietEndHour);
+  if (!preferences.isKey("quiet_mute") ||
+      preferences.getBool("quiet_mute") != settings.quietMuteEnabled) {
+    preferences.putBool("quiet_mute", settings.quietMuteEnabled);
+  }
   preferences.putUChar("schema", kSettingsSchemaVersion);
 }
 
@@ -240,7 +248,7 @@ void sampleRtc(bool logResult = false) {
   }
 }
 
-bool isQuietHour() {
+bool isQuietTimeWindow() {
   if (!rtcValid || settings.quietStartHour == settings.quietEndHour) {
     return false;
   }
@@ -251,8 +259,12 @@ bool isQuietHour() {
   return hour >= settings.quietStartHour || hour < settings.quietEndHour;
 }
 
+bool isQuietMuteActive() {
+  return settings.quietMuteEnabled && isQuietTimeWindow();
+}
+
 void playUiSound(UiSound sound, uint8_t variant = 0) {
-  if (!uiSounds.ready() || settings.soundVolume == 0 || isQuietHour() ||
+  if (!uiSounds.ready() || settings.soundVolume == 0 || isQuietMuteActive() ||
       screenPowerState == ScreenPowerState::Sleeping) {
     return;
   }
@@ -676,6 +688,17 @@ void cycleSoundVolume(uint32_t nowMs, bool refreshStatus = true) {
                 nextIndex == 0 ? "muted" : String(nextIndex).c_str());
 }
 
+void toggleQuietMute(uint32_t nowMs) {
+  settings.quietMuteEnabled = !settings.quietMuteEnabled;
+  saveSettings();
+  startVibration(settings.quietMuteEnabled ? 95 : 75,
+                 settings.quietMuteEnabled ? 34 : 22);
+  playUiSound(settings.quietMuteEnabled ? UiSound::Confirm : UiSound::Close);
+  Serial.printf("Scheduled quiet mute saved: %s (%02u:00-%02u:00)\n",
+                settings.quietMuteEnabled ? "on" : "off",
+                settings.quietStartHour, settings.quietEndHour);
+}
+
 void renderEyeMenu(uint32_t nowMs) {
   if (!eyeMenuMode) return;
 
@@ -686,9 +709,10 @@ void renderEyeMenu(uint32_t nowMs) {
   ExpressionId expression = ExpressionId::Curious;
 
   if (eyeMenuPage == EyeMenuPage::Root) {
-    constexpr const char* labels[] = {"亮度", "音量", "网络"};
-    leftText = labels[eyeMenuIndex % 3];
-    rightText = String((eyeMenuIndex % 3) + 1) + "/3";
+    constexpr const char* labels[] = {"亮度", "音量", "夜静", "网络"};
+    leftText = labels[eyeMenuIndex % kEyeMenuItemCount];
+    rightText = String((eyeMenuIndex % kEyeMenuItemCount) + 1) + "/" +
+                String(kEyeMenuItemCount);
     // Eye messages are intentionally rendered only while the energy/status
     // layer is active. Keep that layer enabled for the otherwise pure root
     // menu so its labels remain visible inside the eyes.
@@ -703,6 +727,11 @@ void renderEyeMenu(uint32_t nowMs) {
     leftText = level == 0 ? "静音" : "音量";
     rightText = String(level) + "/4";
     eyeLevel = level / 4.0f;
+    avatar.setEnergyUi(eyeLevel, false, false);
+  } else if (eyeMenuPage == EyeMenuPage::QuietMute) {
+    leftText = "夜静";
+    rightText = settings.quietMuteEnabled ? "开" : "关";
+    eyeLevel = settings.quietMuteEnabled ? 0.58f : 1.0f;
     avatar.setEnergyUi(eyeLevel, false, false);
   } else {
     switch (wifiPairing.state()) {
@@ -866,11 +895,12 @@ void handleEyeMenuInput(uint32_t nowMs) {
         reached(nowMs, eyeMenuAClickDeadlineMs)) {
       eyeMenuAClickCount = 0;
       eyeMenuAClickDeadlineMs = 0;
-      eyeMenuIndex = (eyeMenuIndex + 1) % 3;
+      eyeMenuIndex = (eyeMenuIndex + 1) % kEyeMenuItemCount;
       startVibration(85, 22);
       playUiSound(UiSound::Next);
       renderEyeMenu(nowMs);
-      Serial.printf("Eye menu selection: %u/3\n", eyeMenuIndex + 1);
+      Serial.printf("Eye menu selection: %u/%u\n", eyeMenuIndex + 1,
+                    kEyeMenuItemCount);
     }
     return;
   }
@@ -883,6 +913,11 @@ void handleEyeMenuInput(uint32_t nowMs) {
   }
   if (eyeMenuPage == EyeMenuPage::Sound) {
     cycleSoundVolume(nowMs, false);
+    renderEyeMenu(nowMs);
+    return;
+  }
+  if (eyeMenuPage == EyeMenuPage::QuietMute) {
+    toggleQuietMute(nowMs);
     renderEyeMenu(nowMs);
     return;
   }
@@ -1070,7 +1105,7 @@ void updateDisplayPower(uint32_t nowMs) {
 
   if (inactiveMs >= settings.dimAfterMs) {
     if (screenPowerState == ScreenPowerState::Bright) {
-      if (isQuietHour()) {
+      if (isQuietTimeWindow()) {
         avatar.show(ExpressionId::Sleepy, nowMs, false, 420);
         nightRestActive = true;
         Serial.println("Quiet-hour sleepy state");
@@ -1088,7 +1123,7 @@ void printCompanionStatus() {
   sampleRtc();
   Serial.printf(
       "Status: time=%s date=%s battery=%ld%% voltage=%dmV charging=%s "
-      "brightness=%u volume=%u dim=%lus off=%lus quiet=%02u-%02u "
+      "brightness=%u volume=%u dim=%lus off=%lus quiet=%s/%02u-%02u "
       "wifi=%s ip=%s\n",
       formattedTime().c_str(), formattedDate().c_str(),
       static_cast<long>(batteryLevel), batteryVoltageMv,
@@ -1096,6 +1131,7 @@ void printCompanionStatus() {
       settings.brightness, settings.soundVolume,
       static_cast<unsigned long>(settings.dimAfterMs / 1000UL),
       static_cast<unsigned long>(settings.screenOffAfterMs / 1000UL),
+      settings.quietMuteEnabled ? "on" : "off",
       settings.quietStartHour, settings.quietEndHour,
       wifiPairing.stateName(), wifiPairing.localIp().c_str());
   Serial.printf("Wi-Fi detail: ssid=%s state=%s ip=%s\n",
@@ -1145,7 +1181,7 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
     playUiSound(UiSound::Confirm);
     const char* result = !uiSounds.ready()      ? "unavailable"
                          : settings.soundVolume == 0 ? "muted"
-                         : isQuietHour()            ? "quiet hours"
+                         : isQuietMuteActive()      ? "quiet hours"
                                                     : "played";
     Serial.printf("Sound test: %s\n", result);
     return true;

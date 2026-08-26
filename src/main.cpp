@@ -636,12 +636,12 @@ void renderEyeMenu(uint32_t nowMs) {
   } else {
     switch (wifiPairing.state()) {
       case WifiPairing::State::Offline:
-        leftText = "未连";
-        rightText = "长按";
+        leftText = "网络";
+        rightText = "未连";
         break;
       case WifiPairing::State::Connecting:
-        leftText = "连接";
-        rightText = "...";
+        leftText = "网络";
+        rightText = "连接";
         eyeLevel = 0.58f;
         expression = ExpressionId::Thinking;
         break;
@@ -650,14 +650,14 @@ void renderEyeMenu(uint32_t nowMs) {
         rightText = wifiPairing.accessPointCode();
         break;
       case WifiPairing::State::Connected:
-        leftText = "已连";
-        rightText = "长按";
+        leftText = "网络";
+        rightText = "已连";
         eyeLevel = wifiPairing.signalLevel();
         expression = ExpressionId::Listening;
         break;
       case WifiPairing::State::Failed:
-        leftText = "失败";
-        rightText = "长按";
+        leftText = "网络";
+        rightText = "失败";
         expression = ExpressionId::Sad;
         break;
     }
@@ -760,6 +760,14 @@ void handleEyeMenuInput(uint32_t nowMs) {
   }
 
   if (eyeMenuPage == EyeMenuPage::Wifi) {
+    if (M5.BtnA.wasPressed() && !wifiPairing.portalActive()) {
+      noteActivity(nowMs);
+      const bool connected = wifiPairing.connected();
+      const bool failed = wifiPairing.state() == WifiPairing::State::Failed;
+      avatar.setEyeMessage(connected ? "换网" : (failed ? "重试" : "配网"),
+                           "按住", nowMs, kWifiPairingHoldMs + 600);
+      avatar.invalidate();
+    }
     if (M5.BtnA.wasReleased()) eyeMenuWifiHoldLatched = false;
     if (!eyeMenuWifiHoldLatched &&
         M5.BtnA.pressedFor(kWifiPairingHoldMs)) {
@@ -777,8 +785,7 @@ void handleEyeMenuInput(uint32_t nowMs) {
     if (M5.BtnA.wasClicked()) {
       noteActivity(nowMs);
       startVibration(70, 18);
-      avatar.setEyeMessage("长按", "配网", nowMs, 1500);
-      avatar.invalidate();
+      renderEyeMenu(nowMs);
     }
     return;
   }
@@ -1518,7 +1525,7 @@ void setup() {
   Serial.println("Playback test: once|loop|pingpong <expression>");
   Serial.println("Hold A+B for hardware diagnostics");
   Serial.println(
-      "Hold A: status; hold B: Wi-Fi; in status triple A: battery %, hold A: volume, hold B: brightness");
+      "Hold A: eye menu; swipe down: battery; Wi-Fi page hold A: pair/change network; B: back");
   Serial.println("Sound test: sound");
   Serial.println(
       "Companion commands: status, time [YYYY-MM-DD HH:MM:SS], "

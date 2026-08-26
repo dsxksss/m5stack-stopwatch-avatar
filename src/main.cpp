@@ -3,8 +3,10 @@
 #include <Arduino.h>
 #include <M5IOE1.h>
 #include <M5Unified.h>
+#include <Preferences.h>
 
 #include "avatar_engine.h"
+#include "ui_sound.h"
 
 namespace {
 
@@ -13,29 +15,77 @@ constexpr uint8_t kVibrationPwmRegister = 0x1B;
 constexpr uint32_t kIoeBusFrequency = M5IOE1_I2C_FREQ_100K;
 constexpr uint32_t kDiagnosticRefreshIntervalMs = 100;
 constexpr uint32_t kImuInteractionIntervalMs = 20;
-constexpr uint32_t kShakeReleaseDelayMs = 650;
-constexpr uint32_t kShakeSequenceTimeoutMs = 1500;
-constexpr uint32_t kShakeMaximumSwingGapMs = 480;
-constexpr uint32_t kShakeMinimumSwingGapMs = 90;
-constexpr float kStrongShakeAxisDelta = 0.32f;
-constexpr float kStrongShakeJerk = 0.50f;
-constexpr uint8_t kRequiredShakeSwings = 4;
 constexpr uint16_t kImuCalibrationSamples = 30;
 constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
+constexpr char kPreferencesNamespace[] = "kk-avatar";
+constexpr uint8_t kSettingsSchemaVersion = 3;
+constexpr uint8_t kDefaultBrightness = 150;
+constexpr uint8_t kDefaultSoundVolume = 56;
+constexpr uint8_t kSoundVolumeLevels[] = {0, 32, 56, 84, 112};
+constexpr uint8_t kDimBrightness = 24;
+constexpr uint32_t kDefaultDimAfterMs = 45UL * 1000UL;
+constexpr uint32_t kDefaultScreenOffAfterMs = 60UL * 1000UL;
+constexpr uint32_t kStatusMessageHoldMs = 3400;
+constexpr uint32_t kStatusDismissAnimationMs = 900;
+constexpr uint32_t kBrightnessStatusHoldDelayMs = 280;
+constexpr uint32_t kBrightnessStatusRepeatMs = 320;
+constexpr uint32_t kSoundStatusHoldDelayMs = 420;
+constexpr uint32_t kSoundStatusRepeatMs = 450;
+constexpr uint32_t kStatusTripleClickWindowMs = 480;
+constexpr uint32_t kPowerSampleIntervalMs = 5000;
+constexpr uint32_t kRtcSampleIntervalMs = 30000;
+constexpr uint32_t kDimRenderIntervalMs = 50;
+constexpr uint32_t kMotionWakeGraceMs = 1500;
+constexpr float kMotionWakeJerkThreshold = 0.30f;
+constexpr uint8_t kMotionWakeRequiredSamples = 2;
+constexpr uint32_t kLowBatteryReminderIntervalMs = 15UL * 60UL * 1000UL;
+constexpr uint8_t kLowBatteryThreshold = 15;
 
 enum class GestureAxis : uint8_t { None, Horizontal, Vertical };
+enum class ScreenPowerState : uint8_t { Bright, Dimmed, Sleeping };
+
+struct CompanionSettings {
+  uint8_t brightness = kDefaultBrightness;
+  uint8_t soundVolume = kDefaultSoundVolume;
+  bool showBatteryPercent = true;
+  uint32_t dimAfterMs = kDefaultDimAfterMs;
+  uint32_t screenOffAfterMs = kDefaultScreenOffAfterMs;
+  uint8_t quietStartHour = 22;
+  uint8_t quietEndHour = 7;
+};
 
 M5IOE1 ioe;
 AvatarEngine avatar;
+UiSoundEngine uiSounds;
+Preferences preferences;
+CompanionSettings settings;
 bool vibrationReady = false;
 bool diagnosticMode = false;
 bool diagnosticToggleLatched = false;
+bool statusMode = false;
+bool rtcValid = false;
+bool chargingStateKnown = false;
+bool charging = false;
+bool chargeReadingValid = false;
+bool nightRestActive = false;
 uint32_t vibrationStopsAtMs = 0;
 uint32_t lastDiagnosticRefreshMs = 0;
 uint32_t lastImuInteractionMs = 0;
-uint32_t shakeQuietStartedMs = 0;
+uint32_t lastActivityMs = 0;
+uint32_t statusDismissesAtMs = 0;
+uint32_t statusReactionStartsAtMs = 0;
+uint32_t brightnessChangedMs = 0;
+uint32_t brightnessRepeatAtMs = 0;
+uint32_t soundChangedMs = 0;
+uint32_t soundRepeatAtMs = 0;
+uint32_t statusAClickDeadlineMs = 0;
+uint32_t lastPowerSampleMs = 0;
+uint32_t lastRtcSampleMs = 0;
+uint32_t lastDimRenderMs = 0;
+uint32_t screenSleptAtMs = 0;
+uint32_t lastLowBatteryReminderMs = 0;
 uint16_t imuCalibrationCount = 0;
 float filteredAccelX = 0.0f;
 float filteredAccelY = 0.0f;
@@ -45,25 +95,391 @@ float previousAccelX = 0.0f;
 float previousAccelY = 0.0f;
 float previousAccelZ = 0.0f;
 float shakeEnergy = 0.0f;
-bool shakeReactionActive = false;
-uint8_t shakeSwingCount = 0;
-int8_t previousShakeDirection = 0;
-uint32_t shakeSequenceStartedMs = 0;
-uint32_t lastStrongShakeMs = 0;
+bool statusDismissing = false;
+bool brightnessHoldRepeated = false;
+bool soundHoldRepeated = false;
+bool soundAdjustmentArmed = false;
+uint8_t statusAClickCount = 0;
+uint8_t motionWakeSampleCount = 0;
 String lastDiagnosticEvent = "Waiting for input";
 String serialCommand;
 GestureAxis gestureAxis = GestureAxis::None;
 bool gestureCommitted = false;
+int32_t batteryLevel = -1;
+int16_t batteryVoltageMv = -1;
+m5::rtc_datetime_t rtcDateTime;
+ScreenPowerState screenPowerState = ScreenPowerState::Bright;
+ExpressionId statusReturnExpression = ExpressionId::Idle;
+
+void setFont();
+void startVibration(uint8_t strength, uint16_t durationMs);
 
 bool reached(uint32_t now, uint32_t deadline) {
   return deadline != 0 && static_cast<int32_t>(now - deadline) >= 0;
 }
 
-void resetShakeSequence() {
-  shakeSwingCount = 0;
-  previousShakeDirection = 0;
-  shakeSequenceStartedMs = 0;
-  lastStrongShakeMs = 0;
+uint32_t clampTimeoutSeconds(int seconds, uint32_t fallbackMs) {
+  if (seconds < 10 || seconds > 24 * 60 * 60) return fallbackMs;
+  return static_cast<uint32_t>(seconds) * 1000UL;
+}
+
+void loadSettings() {
+  if (!preferences.begin(kPreferencesNamespace, false)) {
+    Serial.println("Settings storage unavailable; using defaults");
+    return;
+  }
+  settings.brightness =
+      preferences.getUChar("brightness", kDefaultBrightness);
+  settings.soundVolume =
+      preferences.getUChar("sound_vol", kDefaultSoundVolume);
+  settings.showBatteryPercent = preferences.getBool("battery_pct", true);
+  settings.dimAfterMs = clampTimeoutSeconds(
+      preferences.getUInt("dim_sec", kDefaultDimAfterMs / 1000UL),
+      kDefaultDimAfterMs);
+  settings.screenOffAfterMs = clampTimeoutSeconds(
+      preferences.getUInt("off_sec", kDefaultScreenOffAfterMs / 1000UL),
+      kDefaultScreenOffAfterMs);
+  settings.quietStartHour = preferences.getUChar("quiet_start", 22);
+  settings.quietEndHour = preferences.getUChar("quiet_end", 7);
+
+  // Version 1 used 60 s for dimming and 300 s for panel sleep. Migrate that
+  // exact old default so existing devices now become fully dark at 60 s.
+  const uint8_t storedSchema = preferences.getUChar("schema", 1);
+  if (storedSchema < kSettingsSchemaVersion &&
+      settings.dimAfterMs == 60UL * 1000UL &&
+      settings.screenOffAfterMs == 5UL * 60UL * 1000UL) {
+    settings.dimAfterMs = kDefaultDimAfterMs;
+    settings.screenOffAfterMs = kDefaultScreenOffAfterMs;
+    preferences.putUInt("dim_sec", settings.dimAfterMs / 1000UL);
+    preferences.putUInt("off_sec", settings.screenOffAfterMs / 1000UL);
+    Serial.println("Power timeout migrated: dim 45s, screen off 60s");
+  }
+  preferences.putUChar("schema", kSettingsSchemaVersion);
+
+  settings.brightness = constrain(settings.brightness, 20, 255);
+  settings.soundVolume = constrain(settings.soundVolume, 0, 160);
+  settings.quietStartHour = std::min<uint8_t>(settings.quietStartHour, 23);
+  settings.quietEndHour = std::min<uint8_t>(settings.quietEndHour, 23);
+  if (settings.screenOffAfterMs <= settings.dimAfterMs) {
+    settings.screenOffAfterMs = settings.dimAfterMs + 60000UL;
+  }
+}
+
+void saveSettings() {
+  if (!preferences.isKey("brightness") ||
+      preferences.getUChar("brightness") != settings.brightness) {
+    preferences.putUChar("brightness", settings.brightness);
+  }
+  if (!preferences.isKey("sound_vol") ||
+      preferences.getUChar("sound_vol") != settings.soundVolume) {
+    preferences.putUChar("sound_vol", settings.soundVolume);
+  }
+  if (!preferences.isKey("battery_pct") ||
+      preferences.getBool("battery_pct") != settings.showBatteryPercent) {
+    preferences.putBool("battery_pct", settings.showBatteryPercent);
+  }
+  preferences.putUInt("dim_sec", settings.dimAfterMs / 1000UL);
+  preferences.putUInt("off_sec", settings.screenOffAfterMs / 1000UL);
+  preferences.putUChar("quiet_start", settings.quietStartHour);
+  preferences.putUChar("quiet_end", settings.quietEndHour);
+  preferences.putUChar("schema", kSettingsSchemaVersion);
+}
+
+bool isValidRtcDateTime(const m5::rtc_datetime_t& value) {
+  return value.date.year >= 2024 && value.date.year <= 2099 &&
+         value.date.month >= 1 && value.date.month <= 12 &&
+         value.date.date >= 1 && value.date.date <= 31 &&
+         value.time.hours >= 0 && value.time.hours <= 23 &&
+         value.time.minutes >= 0 && value.time.minutes <= 59 &&
+         value.time.seconds >= 0 && value.time.seconds <= 59;
+}
+
+void sampleRtc(bool logResult = false) {
+  rtcValid = M5.Rtc.isEnabled() && M5.Rtc.getDateTime(&rtcDateTime) &&
+             isValidRtcDateTime(rtcDateTime) && !M5.Rtc.getVoltLow();
+  if (logResult) {
+    if (rtcValid) {
+      Serial.printf("RTC %04d-%02d-%02d %02d:%02d:%02d\n",
+                    rtcDateTime.date.year, rtcDateTime.date.month,
+                    rtcDateTime.date.date, rtcDateTime.time.hours,
+                    rtcDateTime.time.minutes, rtcDateTime.time.seconds);
+    } else {
+      Serial.println("RTC time is not set");
+    }
+  }
+}
+
+bool isQuietHour() {
+  if (!rtcValid || settings.quietStartHour == settings.quietEndHour) {
+    return false;
+  }
+  const uint8_t hour = rtcDateTime.time.hours;
+  if (settings.quietStartHour < settings.quietEndHour) {
+    return hour >= settings.quietStartHour && hour < settings.quietEndHour;
+  }
+  return hour >= settings.quietStartHour || hour < settings.quietEndHour;
+}
+
+void playUiSound(UiSound sound, uint8_t variant = 0) {
+  if (!uiSounds.ready() || settings.soundVolume == 0 || isQuietHour() ||
+      screenPowerState == ScreenPowerState::Sleeping) {
+    return;
+  }
+  uiSounds.play(sound, variant);
+}
+
+void playExpressionSound(ExpressionId expression) {
+  switch (expression) {
+    case ExpressionId::Happy:
+    case ExpressionId::Excited:
+      playUiSound(UiSound::Confirm);
+      break;
+    case ExpressionId::Surprised:
+      playUiSound(UiSound::Open);
+      break;
+    case ExpressionId::Angry:
+      playUiSound(UiSound::Warning);
+      break;
+    case ExpressionId::Sad:
+    case ExpressionId::Sleepy:
+      playUiSound(UiSound::Previous);
+      break;
+    default:
+      playUiSound(UiSound::Tap);
+      break;
+  }
+}
+
+void samplePower() {
+  batteryLevel = M5.Power.getBatteryLevel();
+  batteryVoltageMv = M5.Power.getBatteryVoltage();
+  const auto chargeState = M5.Power.isCharging();
+  chargeReadingValid =
+      chargeState != m5::Power_Class::is_charging_t::charge_unknown;
+  if (chargeReadingValid) {
+    charging = chargeState == m5::Power_Class::is_charging_t::is_charging;
+  }
+}
+
+String formattedTime() {
+  if (!rtcValid) return "--:--";
+  char value[8];
+  snprintf(value, sizeof(value), "%02d:%02d", rtcDateTime.time.hours,
+           rtcDateTime.time.minutes);
+  return String(value);
+}
+
+String formattedDate() {
+  if (!rtcValid) return "RTC not set";
+  char value[16];
+  snprintf(value, sizeof(value), "%04d-%02d-%02d", rtcDateTime.date.year,
+           rtcDateTime.date.month, rtcDateTime.date.date);
+  return String(value);
+}
+
+uint8_t soundVolumeLevelIndex() {
+  uint8_t activeLevel = 0;
+  uint8_t closestDistance = 255;
+  for (uint8_t index = 0;
+       index < sizeof(kSoundVolumeLevels) / sizeof(kSoundVolumeLevels[0]);
+       ++index) {
+    const uint8_t distance = abs(static_cast<int>(settings.soundVolume) -
+                                 kSoundVolumeLevels[index]);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      activeLevel = index;
+    }
+  }
+  return activeLevel;
+}
+
+uint8_t brightnessLevelIndex() {
+  constexpr uint8_t levels[] = {60, 100, 150, 220};
+  uint8_t activeLevel = 0;
+  uint8_t closestDistance = 255;
+  for (uint8_t index = 0; index < 4; ++index) {
+    const uint8_t distance =
+        abs(static_cast<int>(settings.brightness) - levels[index]);
+    if (distance < closestDistance) {
+      closestDistance = distance;
+      activeLevel = index;
+    }
+  }
+  return activeLevel;
+}
+
+void setStatusEyeMessage(uint32_t nowMs) {
+  String leftText;
+  String rightText;
+  const bool soundFeedback =
+      soundChangedMs != 0 && nowMs - soundChangedMs < 1200;
+  const bool brightnessFeedback =
+      brightnessChangedMs != 0 && nowMs - brightnessChangedMs < 1200;
+  if (soundFeedback) {
+    const uint8_t activeLevel = soundVolumeLevelIndex();
+    leftText = activeLevel == 0 ? "静音" : "音量";
+    rightText = "";
+  } else if (brightnessFeedback) {
+    leftText = "亮度";
+    rightText = "";
+  } else if (charging) {
+    leftText = "充电";
+    if (settings.showBatteryPercent && batteryLevel >= 0) {
+      rightText = String(batteryLevel) + "%";
+    }
+  } else if (batteryLevel >= 80) {
+    leftText = "充足";
+    if (settings.showBatteryPercent) rightText = String(batteryLevel) + "%";
+  } else if (batteryLevel >= 45) {
+    leftText = "不错";
+    if (settings.showBatteryPercent) rightText = String(batteryLevel) + "%";
+  } else if (batteryLevel >= 20) {
+    leftText = "累了";
+    if (settings.showBatteryPercent) rightText = String(batteryLevel) + "%";
+  } else {
+    leftText = "休息";
+    if (settings.showBatteryPercent && batteryLevel >= 0) {
+      rightText = String(batteryLevel) + "%";
+    }
+  }
+  avatar.setEyeMessage(leftText, rightText, nowMs,
+                       kStatusMessageHoldMs + 180);
+}
+
+void wakeDisplay(uint32_t nowMs) {
+  const bool wasSleeping = screenPowerState == ScreenPowerState::Sleeping;
+  if (wasSleeping) M5.Display.wakeup();
+  M5.Display.setBrightness(settings.brightness);
+  screenPowerState = ScreenPowerState::Bright;
+  screenSleptAtMs = 0;
+  motionWakeSampleCount = 0;
+  lastActivityMs = nowMs;
+  if (nightRestActive) {
+    nightRestActive = false;
+    avatar.show(avatar.baseExpression(), nowMs, false, 260);
+  }
+  if (wasSleeping) {
+    avatar.invalidate();
+    playUiSound(UiSound::Wake);
+    Serial.println("Display woke");
+  }
+}
+
+void noteActivity(uint32_t nowMs) {
+  if (screenPowerState != ScreenPowerState::Bright) {
+    wakeDisplay(nowMs);
+  } else {
+    lastActivityMs = nowMs;
+  }
+}
+
+void showStatus(uint32_t nowMs) {
+  noteActivity(nowMs);
+  samplePower();
+  sampleRtc();
+  const bool soundFeedback =
+      soundChangedMs != 0 && nowMs - soundChangedMs < 1200;
+  const bool brightnessFeedback =
+      brightnessChangedMs != 0 && nowMs - brightnessChangedMs < 1200;
+  if (soundFeedback) {
+    avatar.setEnergyUi(soundVolumeLevelIndex() / 4.0f, false, false);
+  } else if (brightnessFeedback) {
+    avatar.setEnergyUi((brightnessLevelIndex() + 1) / 4.0f, false, false);
+  } else {
+    avatar.setEnergyUi(batteryLevel >= 0 ? batteryLevel / 100.0f : 1.0f,
+                       charging, true);
+  }
+  setStatusEyeMessage(nowMs);
+  if (!statusMode) {
+    playUiSound(UiSound::Open);
+    soundAdjustmentArmed = !M5.BtnA.isPressed();
+    soundRepeatAtMs = 0;
+    soundHoldRepeated = false;
+    statusAClickCount = 0;
+    statusAClickDeadlineMs = 0;
+    statusReturnExpression = avatar.baseExpression();
+    ExpressionId statusExpression = ExpressionId::Idle;
+    if (charging) {
+      statusExpression = ExpressionId::Listening;
+    } else if (batteryLevel >= 70) {
+      statusExpression = ExpressionId::Listening;
+    } else if (batteryLevel >= 35) {
+      statusExpression = ExpressionId::Curious;
+    } else if (batteryLevel >= 15) {
+      statusExpression = ExpressionId::Sad;
+    } else if (batteryLevel >= 0) {
+      statusExpression = ExpressionId::Sleepy;
+    }
+    avatar.play(statusExpression, nowMs, AvatarEngine::PlaybackMode::PingPong,
+                false, 260);
+    avatar.invalidate();
+  }
+  statusMode = true;
+  statusDismissing = false;
+  statusReactionStartsAtMs = nowMs + kStatusMessageHoldMs;
+  statusDismissesAtMs =
+      statusReactionStartsAtMs + kStatusDismissAnimationMs;
+  Serial.println("Immersive energy expression opened");
+}
+
+void hideStatus() {
+  if (!statusMode) return;
+  statusMode = false;
+  statusDismissing = false;
+  statusReactionStartsAtMs = 0;
+  statusDismissesAtMs = 0;
+  brightnessRepeatAtMs = 0;
+  brightnessHoldRepeated = false;
+  soundRepeatAtMs = 0;
+  soundHoldRepeated = false;
+  soundAdjustmentArmed = false;
+  statusAClickCount = 0;
+  statusAClickDeadlineMs = 0;
+  avatar.releaseTouch();
+  avatar.clearEnergyUi();
+  avatar.show(statusReturnExpression, millis(), false, 260);
+  avatar.invalidate();
+  Serial.println("Immersive energy expression closed");
+}
+
+void cycleBrightness(uint32_t nowMs) {
+  constexpr uint8_t levels[] = {60, 100, 150, 220};
+  uint8_t next = levels[0];
+  uint8_t nextIndex = 0;
+  for (uint8_t index = 0; index < 4; ++index) {
+    if (levels[index] > settings.brightness) {
+      next = levels[index];
+      nextIndex = index;
+      break;
+    }
+  }
+  settings.brightness = next;
+  brightnessChangedMs = nowMs;
+  saveSettings();
+  M5.Display.setBrightness(settings.brightness);
+  startVibration(115, 30);
+  showStatus(nowMs);
+  playUiSound(UiSound::Brightness, nextIndex);
+  Serial.printf("Brightness saved: %u\n", settings.brightness);
+}
+
+void cycleSoundVolume(uint32_t nowMs) {
+  const uint8_t currentIndex = soundVolumeLevelIndex();
+  const uint8_t nextIndex =
+      (currentIndex + 1) %
+      (sizeof(kSoundVolumeLevels) / sizeof(kSoundVolumeLevels[0]));
+  settings.soundVolume = kSoundVolumeLevels[nextIndex];
+  soundChangedMs = nowMs;
+  saveSettings();
+  uiSounds.setVolume(settings.soundVolume);
+  startVibration(105, 28);
+  showStatus(nowMs);
+  if (settings.soundVolume > 0) {
+    playUiSound(UiSound::Brightness,
+                std::min<uint8_t>(nextIndex - 1, 3));
+  }
+  Serial.printf("Sound volume saved: %u (%s)\n", settings.soundVolume,
+                nextIndex == 0 ? "muted" : String(nextIndex).c_str());
 }
 
 void setFont() {
@@ -164,7 +580,227 @@ void trigger(ExpressionId expression, uint32_t nowMs,
              uint16_t firstTransitionMs = 0) {
   avatar.show(expression, nowMs, true, firstTransitionMs);
   startVibration();
+  playExpressionSound(expression);
   Serial.printf("Expression: %s\n", avatar.activeName());
+}
+
+void updateCompanionSensors(uint32_t nowMs) {
+  if (nowMs - lastRtcSampleMs >= kRtcSampleIntervalMs) {
+    lastRtcSampleMs = nowMs;
+    sampleRtc();
+  }
+
+  if (nowMs - lastPowerSampleMs < kPowerSampleIntervalMs) return;
+  lastPowerSampleMs = nowMs;
+  const bool previousCharging = charging;
+  samplePower();
+
+  if (chargeReadingValid) {
+    if (!chargingStateKnown) {
+      chargingStateKnown = true;
+      Serial.printf("Power ready: battery=%ld%% voltage=%dmV charging=%s\n",
+                    static_cast<long>(batteryLevel), batteryVoltageMv,
+                    charging ? "yes" : "no");
+    } else if (charging != previousCharging) {
+      Serial.printf("Charging state changed: %s\n",
+                    charging ? "connected" : "disconnected");
+      if (!diagnosticMode && !statusMode &&
+          screenPowerState != ScreenPowerState::Sleeping) {
+        trigger(charging ? ExpressionId::Excited : ExpressionId::Curious,
+                nowMs, 220);
+      }
+    }
+  }
+
+  const bool lowBattery = batteryLevel >= 0 &&
+                          batteryLevel <= kLowBatteryThreshold && !charging;
+  if (lowBattery && !diagnosticMode && !statusMode &&
+      screenPowerState != ScreenPowerState::Sleeping &&
+      (lastLowBatteryReminderMs == 0 ||
+       nowMs - lastLowBatteryReminderMs >= kLowBatteryReminderIntervalMs)) {
+    lastLowBatteryReminderMs = nowMs;
+    trigger(ExpressionId::Sleepy, nowMs, 320);
+    Serial.printf("Low battery reminder: %ld%%\n",
+                  static_cast<long>(batteryLevel));
+  }
+}
+
+void updateDisplayPower(uint32_t nowMs) {
+  if (diagnosticMode || statusMode) return;
+  const uint32_t inactiveMs = nowMs - lastActivityMs;
+
+  if (inactiveMs >= settings.screenOffAfterMs) {
+    if (screenPowerState != ScreenPowerState::Sleeping) {
+      stopVibration();
+      M5.Display.fillScreen(TFT_BLACK);
+      M5.Display.setBrightness(0);
+      M5.Display.sleep();
+      screenPowerState = ScreenPowerState::Sleeping;
+      screenSleptAtMs = nowMs;
+      motionWakeSampleCount = 0;
+      Serial.println("Display sleeping; touch, buttons, or motion to wake");
+    }
+    return;
+  }
+
+  if (inactiveMs >= settings.dimAfterMs) {
+    if (screenPowerState == ScreenPowerState::Bright) {
+      if (isQuietHour()) {
+        avatar.show(ExpressionId::Sleepy, nowMs, false, 420);
+        nightRestActive = true;
+        Serial.println("Quiet-hour sleepy state");
+      }
+      M5.Display.setBrightness(
+          std::min<uint8_t>(settings.brightness, kDimBrightness));
+      screenPowerState = ScreenPowerState::Dimmed;
+      Serial.println("Display dimmed; renderer reduced to 20 fps");
+    }
+  }
+}
+
+void printCompanionStatus() {
+  samplePower();
+  sampleRtc();
+  Serial.printf(
+      "Status: time=%s date=%s battery=%ld%% voltage=%dmV charging=%s "
+      "brightness=%u volume=%u dim=%lus off=%lus quiet=%02u-%02u\n",
+      formattedTime().c_str(), formattedDate().c_str(),
+      static_cast<long>(batteryLevel), batteryVoltageMv,
+      chargeReadingValid ? (charging ? "yes" : "no") : "unknown",
+      settings.brightness, settings.soundVolume,
+      static_cast<unsigned long>(settings.dimAfterMs / 1000UL),
+      static_cast<unsigned long>(settings.screenOffAfterMs / 1000UL),
+      settings.quietStartHour, settings.quietEndHour);
+}
+
+bool setRtcFromCommand(const String& command) {
+  int year, month, day, hour, minute, second;
+  if (sscanf(command.c_str(), "time %d-%d-%d %d:%d:%d", &year, &month,
+             &day, &hour, &minute, &second) != 6 || year < 2024 ||
+      year > 2099 || month < 1 || month > 12 || day < 1 || day > 31 ||
+      hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 ||
+      second > 59) {
+    Serial.println("Usage: time YYYY-MM-DD HH:MM:SS");
+    return true;
+  }
+
+  tm calendar = {};
+  calendar.tm_year = year - 1900;
+  calendar.tm_mon = month - 1;
+  calendar.tm_mday = day;
+  calendar.tm_hour = hour;
+  calendar.tm_min = minute;
+  calendar.tm_sec = second;
+  mktime(&calendar);
+  const m5::rtc_datetime_t value(
+      m5::rtc_date_t(year, month, day, calendar.tm_wday),
+      m5::rtc_time_t(hour, minute, second));
+  M5.Rtc.setDateTime(value);
+  delay(20);
+  sampleRtc(true);
+  return true;
+}
+
+bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
+  String command = rawCommand;
+  command.trim();
+  command.toLowerCase();
+
+  if (command == "status") {
+    printCompanionStatus();
+    showStatus(nowMs);
+    return true;
+  }
+  if (command == "sound" || command == "sound test") {
+    playUiSound(UiSound::Confirm);
+    const char* result = !uiSounds.ready()      ? "unavailable"
+                         : settings.soundVolume == 0 ? "muted"
+                         : isQuietHour()            ? "quiet hours"
+                                                    : "played";
+    Serial.printf("Sound test: %s\n", result);
+    return true;
+  }
+  if (command == "time") {
+    sampleRtc(true);
+    return true;
+  }
+  if (command.startsWith("time ")) return setRtcFromCommand(command);
+
+  int value = 0;
+  if (sscanf(command.c_str(), "brightness %d", &value) == 1) {
+    if (value < 20 || value > 255) {
+      Serial.println("Brightness range: 20-255");
+    } else {
+      settings.brightness = static_cast<uint8_t>(value);
+      saveSettings();
+      noteActivity(nowMs);
+      M5.Display.setBrightness(settings.brightness);
+      Serial.printf("Brightness saved: %u\n", settings.brightness);
+    }
+    return true;
+  }
+  if (sscanf(command.c_str(), "volume %d", &value) == 1) {
+    if (value < 0 || value > 160) {
+      Serial.println("Volume range: 0-160");
+    } else {
+      settings.soundVolume = static_cast<uint8_t>(value);
+      soundChangedMs = nowMs;
+      saveSettings();
+      uiSounds.setVolume(settings.soundVolume);
+      showStatus(nowMs);
+      if (settings.soundVolume > 0) playUiSound(UiSound::Confirm);
+      Serial.printf("Sound volume saved: %u\n", settings.soundVolume);
+    }
+    return true;
+  }
+  if (sscanf(command.c_str(), "dim %d", &value) == 1) {
+    const uint32_t timeout = clampTimeoutSeconds(value, 0);
+    if (timeout == 0 || timeout >= settings.screenOffAfterMs) {
+      Serial.println("Dim timeout must be 10-86399 seconds and below off timeout");
+    } else {
+      settings.dimAfterMs = timeout;
+      saveSettings();
+      Serial.printf("Dim timeout saved: %ds\n", value);
+    }
+    return true;
+  }
+  if (sscanf(command.c_str(), "screenoff %d", &value) == 1) {
+    const uint32_t timeout = clampTimeoutSeconds(value, 0);
+    if (timeout == 0 || timeout <= settings.dimAfterMs) {
+      Serial.println("Off timeout must be 10-86400 seconds and above dim timeout");
+    } else {
+      settings.screenOffAfterMs = timeout;
+      saveSettings();
+      Serial.printf("Screen-off timeout saved: %ds\n", value);
+    }
+    return true;
+  }
+
+  int startHour, endHour;
+  if (sscanf(command.c_str(), "quiet %d %d", &startHour, &endHour) == 2) {
+    if (startHour < 0 || startHour > 23 || endHour < 0 || endHour > 23) {
+      Serial.println("Quiet hours range: 0-23");
+    } else {
+      settings.quietStartHour = static_cast<uint8_t>(startHour);
+      settings.quietEndHour = static_cast<uint8_t>(endHour);
+      saveSettings();
+      Serial.printf("Quiet hours saved: %02d:00-%02d:00\n", startHour,
+                    endHour);
+    }
+    return true;
+  }
+
+  if (command == "screen on") {
+    noteActivity(nowMs);
+    Serial.println("Screen forced on");
+    return true;
+  }
+  if (command == "screen off") {
+    lastActivityMs = nowMs - settings.screenOffAfterMs;
+    updateDisplayPower(nowMs);
+    return true;
+  }
+  return false;
 }
 
 void handleProductTouch(uint32_t nowMs) {
@@ -172,6 +808,7 @@ void handleProductTouch(uint32_t nowMs) {
   const auto touch = M5.Touch.getDetail(0);
 
   if (touch.wasPressed()) {
+    noteActivity(nowMs);
     gestureAxis = GestureAxis::None;
     gestureCommitted = false;
   }
@@ -204,6 +841,7 @@ void handleProductTouch(uint32_t nowMs) {
         avatar.commitSwipe(direction, nowMs, kSwipeTransitionMs);
         gestureCommitted = true;
         startVibration(125, 35);
+        playUiSound(direction < 0 ? UiSound::Previous : UiSound::Next);
         Serial.printf("Swipe commit: %s dx=%d\n", avatar.activeName(),
                       deltaX);
       }
@@ -303,6 +941,23 @@ void handleImuInteraction(uint32_t nowMs) {
   previousAccelZ = screenAccelZ;
   shakeEnergy = shakeEnergy * 0.72f + jerk * 0.28f;
 
+  if (screenPowerState == ScreenPowerState::Sleeping) {
+    const bool graceElapsed =
+        screenSleptAtMs != 0 && nowMs - screenSleptAtMs >= kMotionWakeGraceMs;
+    if (graceElapsed && jerk >= kMotionWakeJerkThreshold) {
+      ++motionWakeSampleCount;
+    } else {
+      motionWakeSampleCount = 0;
+    }
+    if (motionWakeSampleCount >= kMotionWakeRequiredSamples) {
+      noteActivity(nowMs);
+      Serial.printf("Motion wake: jerk=%.2f confirmed=%u\n", jerk,
+                    motionWakeSampleCount);
+    }
+    return;
+  }
+  motionWakeSampleCount = 0;
+
   if (imuCalibrationCount < kImuCalibrationSamples) return;
 
   const float shakeIntensity = std::max(
@@ -312,69 +967,6 @@ void handleImuInteraction(uint32_t nowMs) {
   const float shakeDirectionY =
       std::max(-1.0f, std::min(1.0f, -deltaY / 0.28f));
   avatar.setShakeTarget(shakeDirectionX, shakeDirectionY, shakeIntensity);
-
-  if (!shakeReactionActive) {
-    if (shakeSwingCount > 0 &&
-        (nowMs - shakeSequenceStartedMs > kShakeSequenceTimeoutMs ||
-         nowMs - lastStrongShakeMs > kShakeMaximumSwingGapMs)) {
-      resetShakeSequence();
-    }
-
-    if (shakeSwingCount == 0 && jerk >= kStrongShakeJerk) {
-      if (fabsf(deltaX) >= kStrongShakeAxisDelta) {
-        shakeSwingCount = 1;
-        previousShakeDirection = deltaX >= 0.0f ? 1 : -1;
-        shakeSequenceStartedMs = nowMs;
-        lastStrongShakeMs = nowMs;
-        Serial.printf("IMU horizontal swing 1/%u delta=%.2f\n",
-                      kRequiredShakeSwings, deltaX);
-      }
-    } else if (shakeSwingCount > 0) {
-      const int8_t direction = deltaX >= 0.0f ? 1 : -1;
-      const uint32_t swingGapMs = nowMs - lastStrongShakeMs;
-      const bool strongEnough = jerk >= kStrongShakeJerk &&
-                                fabsf(deltaX) >= kStrongShakeAxisDelta;
-      if (strongEnough && direction != previousShakeDirection &&
-          swingGapMs >= kShakeMinimumSwingGapMs &&
-          swingGapMs <= kShakeMaximumSwingGapMs) {
-        ++shakeSwingCount;
-        previousShakeDirection = direction;
-        lastStrongShakeMs = nowMs;
-        Serial.printf("IMU horizontal swing %u/%u delta=%.2f gap=%lums\n",
-                      shakeSwingCount, kRequiredShakeSwings, deltaX,
-                      static_cast<unsigned long>(swingGapMs));
-      }
-    }
-
-    if (shakeSwingCount >= kRequiredShakeSwings) {
-      shakeReactionActive = true;
-      shakeQuietStartedMs = 0;
-      resetShakeSequence();
-      avatar.play(ExpressionId::Dizzy, nowMs,
-                  AvatarEngine::PlaybackMode::Loop, false, 150);
-      startVibration(190, 80);
-      Serial.printf("IMU repeated horizontal shake -> DIZZY energy=%.2f\n",
-                    shakeEnergy);
-    }
-    return;
-  }
-
-  if (shakeIntensity > 0.10f) {
-    shakeQuietStartedMs = 0;
-    return;
-  }
-
-  if (shakeQuietStartedMs == 0) {
-    shakeQuietStartedMs = nowMs;
-  } else if (nowMs - shakeQuietStartedMs >= kShakeReleaseDelayMs) {
-    shakeReactionActive = false;
-    shakeQuietStartedMs = 0;
-    resetShakeSequence();
-    if (avatar.activeExpression() == ExpressionId::Dizzy) {
-      avatar.show(avatar.baseExpression(), nowMs, false, 260);
-    }
-    Serial.println("IMU shake settled -> BASE");
-  }
 }
 
 void handleSerialCommands(uint32_t nowMs) {
@@ -382,8 +974,12 @@ void handleSerialCommands(uint32_t nowMs) {
     const char character = static_cast<char>(Serial.read());
     if (character == '\n' || character == '\r') {
       if (serialCommand.length() == 0) continue;
-      if (avatar.showFromCommand(serialCommand, nowMs)) {
+      if (handleCompanionCommand(serialCommand, nowMs)) {
+        // Companion commands report their own result.
+      } else if (avatar.showFromCommand(serialCommand, nowMs)) {
+        noteActivity(nowMs);
         startVibration();
+        playExpressionSound(avatar.activeExpression());
         Serial.printf("Command accepted: %s\n", avatar.activeName());
       } else {
         Serial.printf("Unknown command: %s\n", serialCommand.c_str());
@@ -419,7 +1015,9 @@ void refreshDiagnosticSensors() {
 }
 
 void setDiagnosticMode(bool enabled) {
+  if (statusMode) hideStatus();
   diagnosticMode = enabled;
+  noteActivity(millis());
   stopVibration();
   if (diagnosticMode) {
     drawDiagnosticFrame();
@@ -432,10 +1030,12 @@ void setDiagnosticMode(bool enabled) {
 
 void handleDiagnosticInput(uint32_t nowMs) {
   if (M5.BtnA.wasClicked()) {
+    noteActivity(nowMs);
     setDiagnosticEvent("Button A clicked");
     startVibration(180, 70);
   }
   if (M5.BtnB.wasClicked()) {
+    noteActivity(nowMs);
     lastDiagnosticEvent = "Button B clicked";
     drawDiagnosticFrame();
     Serial.println(lastDiagnosticEvent);
@@ -443,6 +1043,7 @@ void handleDiagnosticInput(uint32_t nowMs) {
 
   const auto touch = M5.Touch.getDetail(0);
   if (touch.wasPressed()) {
+    noteActivity(nowMs);
     setDiagnosticEvent("Touch " + String(touch.x) + "," + String(touch.y));
   }
 
@@ -462,18 +1063,125 @@ void handleDiagnosticToggle() {
   }
 }
 
+void handleStatusInput(uint32_t nowMs) {
+  if (!statusDismissing && reached(nowMs, statusReactionStartsAtMs)) {
+    statusDismissing = true;
+    avatar.beginEnergyDismiss(nowMs);
+    startVibration(90, 25);
+    playUiSound(UiSound::Close);
+    Serial.println("Eye message dismissed with blink and head shake");
+  }
+  if (reached(nowMs, statusDismissesAtMs)) {
+    hideStatus();
+    return;
+  }
+
+  const auto touch = M5.Touch.getDetail(0);
+  if (touch.wasPressed()) {
+    noteActivity(nowMs);
+    showStatus(nowMs);
+  }
+  if (touch.isPressed()) {
+    avatar.setTouchTarget(touch.x, touch.y);
+  }
+  if (touch.wasReleased()) {
+    avatar.releaseTouch();
+  }
+
+  if (!M5.BtnA.isPressed()) {
+    if (!soundAdjustmentArmed) {
+      soundAdjustmentArmed = true;
+      soundRepeatAtMs = 0;
+      soundHoldRepeated = false;
+    }
+  } else if (soundAdjustmentArmed) {
+    if (M5.BtnA.wasPressed() || soundRepeatAtMs == 0) {
+      soundRepeatAtMs = nowMs + kSoundStatusHoldDelayMs;
+      soundHoldRepeated = false;
+    } else if (reached(nowMs, soundRepeatAtMs)) {
+      cycleSoundVolume(nowMs);
+      soundHoldRepeated = true;
+      soundRepeatAtMs = nowMs + kSoundStatusRepeatMs;
+    }
+  }
+
+  if (M5.BtnB.wasPressed()) {
+    brightnessRepeatAtMs = nowMs + kBrightnessStatusHoldDelayMs;
+    brightnessHoldRepeated = false;
+  }
+  if (M5.BtnB.isPressed()) {
+    if (brightnessRepeatAtMs == 0) {
+      brightnessRepeatAtMs = nowMs + kBrightnessStatusHoldDelayMs;
+    } else if (reached(nowMs, brightnessRepeatAtMs)) {
+      cycleBrightness(nowMs);
+      brightnessHoldRepeated = true;
+      brightnessRepeatAtMs = nowMs + kBrightnessStatusRepeatMs;
+    }
+  }
+
+  const bool brightnessClicked = M5.BtnB.wasClicked();
+  const bool brightnessReleased = M5.BtnB.wasReleased();
+  const bool soundClicked = M5.BtnA.wasClicked();
+  const bool soundReleased = M5.BtnA.wasReleased();
+  if (touch.wasClicked()) {
+    noteActivity(nowMs);
+    hideStatus();
+  } else if (soundClicked && !soundHoldRepeated) {
+    noteActivity(nowMs);
+    if (statusAClickCount == 0 ||
+        !reached(nowMs, statusAClickDeadlineMs)) {
+      ++statusAClickCount;
+    } else {
+      statusAClickCount = 1;
+    }
+    statusAClickDeadlineMs = nowMs + kStatusTripleClickWindowMs;
+    showStatus(nowMs);
+    if (statusAClickCount >= 3) {
+      settings.showBatteryPercent = !settings.showBatteryPercent;
+      saveSettings();
+      statusAClickCount = 0;
+      statusAClickDeadlineMs = 0;
+      startVibration(125, 38);
+      playUiSound(settings.showBatteryPercent ? UiSound::Confirm
+                                              : UiSound::Close);
+      showStatus(nowMs);
+      Serial.printf("Battery percentage in eye: %s\n",
+                    settings.showBatteryPercent ? "on" : "off");
+    }
+  } else if (brightnessClicked && !brightnessHoldRepeated) {
+    cycleBrightness(nowMs);
+  }
+  if (brightnessReleased) {
+    brightnessRepeatAtMs = 0;
+    brightnessHoldRepeated = false;
+  }
+  if (soundReleased) {
+    soundRepeatAtMs = 0;
+    soundHoldRepeated = false;
+  }
+  if (statusMode && statusAClickCount > 0 &&
+      reached(nowMs, statusAClickDeadlineMs)) {
+    hideStatus();
+  }
+}
+
 }  // namespace
 
 void setup() {
   auto config = M5.config();
   config.serial_baudrate = 115200;
+  config.internal_spk = true;
   M5.begin(config);
   Serial.begin(115200);
+  loadSettings();
+  const bool soundReady = uiSounds.begin(settings.soundVolume);
 
   M5.Display.setRotation(0);
-  M5.Display.setBrightness(150);
+  M5.Display.setBrightness(settings.brightness);
   M5.Touch.setHoldThresh(650);
   M5.Touch.setFlickThresh(10);
+  M5.BtnA.setHoldThresh(800);
+  M5.BtnB.setHoldThresh(800);
   setupVibration();
 
   if (!avatar.begin()) {
@@ -486,35 +1194,88 @@ void setup() {
   }
 
   Serial.println("Expression device started");
+  Serial.printf("Speaker: %s\n", soundReady ? "ready" : "unavailable");
   Serial.println(
       "Commands: idle listening thinking happy excited curious confused "
-      "angry surprised sad sleepy dizzy");
+      "angry surprised sad sleepy");
   Serial.println("Playback test: once|loop|pingpong <expression>");
   Serial.println("Hold A+B for hardware diagnostics");
+  Serial.println(
+      "Hold A: status; in status triple A: battery %, hold A: volume, hold B: brightness");
+  Serial.println("Sound test: sound");
+  Serial.println(
+      "Companion commands: status, time [YYYY-MM-DD HH:MM:SS], "
+      "brightness 20-255, volume 0-160, dim seconds, screenoff seconds, quiet start end, "
+      "screen on|off");
+
+  lastActivityMs = millis();
+  lastPowerSampleMs = lastActivityMs - kPowerSampleIntervalMs;
+  lastRtcSampleMs = lastActivityMs - kRtcSampleIntervalMs;
+  updateCompanionSensors(lastActivityMs);
+  sampleRtc(true);
+  printCompanionStatus();
 }
 
 void loop() {
   M5.update();
   const uint32_t nowMs = millis();
   updateVibration(nowMs);
+
+  const auto touch = M5.Touch.getDetail(0);
+  if (screenPowerState == ScreenPowerState::Sleeping &&
+      (M5.BtnA.wasPressed() || M5.BtnB.wasPressed() || touch.wasPressed())) {
+    noteActivity(nowMs);
+  }
+
   handleDiagnosticToggle();
+  updateCompanionSensors(nowMs);
+  handleSerialCommands(nowMs);
 
   if (diagnosticMode) {
     handleDiagnosticInput(nowMs);
+  } else if (statusMode) {
+    handleStatusInput(nowMs);
+    if (statusMode) {
+      avatar.update(nowMs);
+    }
   } else {
-    if (M5.BtnA.wasClicked()) {
+    const bool showStatusRequested =
+        M5.BtnA.wasHold() && !M5.BtnB.isPressed();
+    const bool cycleBrightnessRequested =
+        M5.BtnB.wasHold() && !M5.BtnA.isPressed();
+
+    if (showStatusRequested) {
+      showStatus(nowMs);
+    } else if (cycleBrightnessRequested) {
+      cycleBrightness(nowMs);
+      brightnessHoldRepeated = true;
+      brightnessRepeatAtMs = nowMs + kBrightnessStatusRepeatMs;
+    } else if (M5.BtnA.wasClicked()) {
+      noteActivity(nowMs);
       avatar.previous(nowMs);
       startVibration(125, 35);
-    }
-    if (M5.BtnB.wasClicked()) {
+      playUiSound(UiSound::Previous);
+    } else if (M5.BtnB.wasClicked()) {
+      noteActivity(nowMs);
       avatar.next(nowMs);
       startVibration(125, 35);
+      playUiSound(UiSound::Next);
     }
-    handleProductTouch(nowMs);
-    handleImuInteraction(nowMs);
-    handleSerialCommands(nowMs);
-    avatar.update(nowMs);
+    if (!statusMode) {
+      handleProductTouch(nowMs);
+      handleImuInteraction(nowMs);
+
+      if (screenPowerState == ScreenPowerState::Bright) {
+        avatar.update(nowMs);
+      } else if (screenPowerState == ScreenPowerState::Dimmed &&
+                 nowMs - lastDimRenderMs >= kDimRenderIntervalMs) {
+        lastDimRenderMs = nowMs;
+        avatar.update(nowMs);
+      }
+    }
   }
+
+  updateDisplayPower(nowMs);
 
   // A short cooperative yield keeps input responsive without quantizing the
   // 60 fps renderer onto a coarse 5 ms loop cadence.

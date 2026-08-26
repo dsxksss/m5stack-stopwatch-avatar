@@ -13,13 +13,18 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 
 ## Highlights
 
-- 12 procedural expressions: `idle`, `listening`, `thinking`, `happy`, `excited`, `curious`, `confused`, `angry`, `surprised`, `sad`, `sleepy` and `dizzy`;
-- 60 fps target rendering with dynamic dirty rectangles to reduce AMOLED transfer work;
+- 11 procedural expressions: `idle`, `listening`, `thinking`, `happy`, `excited`, `curious`, `confused`, `angry`, `surprised`, `sad` and `sleepy`;
+- hardware vertical sync from the CO5300 TE signal on GPIO 38, rendering at about 60 fps with dynamic dirty rectangles to reduce AMOLED transfer work;
 - tap, double tap, long press, continuous touch tracking, and horizontal/vertical swipes;
-- accelerometer and gyroscope fusion for tilt tracking, with the eyes leading and the head following;
-- four strong alternating horizontal shakes trigger a looping spiral-eyed dizzy reaction;
+- accelerometer and gyroscope fusion for tilt tracking, with the eyes leading, the head following and a centered safe-motion area;
+- quick movement adds a brief inertial response while keeping the current expression;
 - A/B buttons browse expressions, with vibration feedback;
+- original soft pop, boop and blip effects are synthesized for expressions, navigation, energy status, brightness and wake events, with automatic quiet-hours muting;
 - hold A+B to enter hardware diagnostics;
+- hold A for an immersive status expression: the left eye shows a softly feathered label while the right eye's opening conveys battery, sound volume or brightness; triple-press A to toggle the saved battery percentage label, hold A again to cycle mute plus four sound levels, or hold B to cycle four brightness levels; after a moment the character winds up, blinks, shakes twice and settles back into its pure expression;
+- dim after 45 seconds of inactivity and clear/switch the AMOLED off after 60 seconds, with touch, button and motion wake;
+- persist brightness, idle timeouts and quiet hours in NVS;
+- use the RX8130 RTC for quiet-hour sleepy behavior, with serial time setting;
 - semantic serial commands provide a stable input boundary for future voice recognition or external control.
 
 ## Interaction map
@@ -33,8 +38,11 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 | Swipe left / right | Preview and switch to the adjacent expression |
 | Swipe up / down | `surprised` / `sleepy` |
 | Slowly tilt the device | Gaze continuously follows the tilt direction |
-| Four strong alternating horizontal shakes | Loop `dizzy`, then recover after the device settles |
+| Quickly move the device | Add a brief inertial eye/head response without changing expression |
 | A / B | Previous / next expression |
+| Hold A | Open immersive status; release and hold A again to cycle mute plus four sound levels |
+| Triple-press A in status | Show / hide the saved battery percentage label in the right eye |
+| Hold B | Enter four-level brightness adjustment; keep holding to repeat about every 320 ms and save |
 | Hold A+B | Enter / exit hardware diagnostics |
 
 `idle`, `listening` and `thinking` are persistent base states. Other reactions return to the previously active base state when their animation finishes instead of always returning to idle.
@@ -73,13 +81,31 @@ pio run --target upload
 pio device monitor --baud 115200
 ```
 
-The monitor accepts expression names such as `happy`, `thinking` or `dizzy`. Playback testing also supports:
+The monitor accepts expression names such as `happy`, `thinking` or `sleepy`. Playback testing also supports:
 
 ```text
 once <expression>
 loop <expression>
 pingpong <expression>
+sound
+volume 0-160
 ```
+
+Companion features also accept:
+
+```text
+status
+time
+time 2026-08-26 20:00:00
+brightness 150
+dim 60
+screenoff 300
+quiet 22 7
+screen on
+screen off
+```
+
+The RTC stores device-local time and does not apply time zones automatically. `dim` and `screenoff` use seconds; brightness, timeouts and quiet hours persist in NVS.
 
 ## Repository map
 
@@ -94,8 +120,9 @@ pingpong <expression>
 ## Known limitations
 
 - The microphone and offline speech recognition are not connected yet. Serial commands only simulate semantic voice events.
-- Audio playback, RTC, deep sleep, wake-up strategy and external expansion ports are not integrated.
-- Battery life has not been optimized for long-term always-on use.
+- Deep sleep and external expansion ports are not integrated. The current power strategy switches off only the AMOLED and keeps input sampling active for quick wake-up.
+- RTC support is integrated, but local time must still be set over serial until network time synchronization is added.
+- Long-term battery life has not been measured; the default timeouts are a conservative starting point.
 - Subjective motion and gesture tuning may vary with how the device is held.
 
 ## Inspiration and provenance

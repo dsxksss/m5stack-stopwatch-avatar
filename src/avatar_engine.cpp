@@ -23,12 +23,15 @@ constexpr uint16_t kEyeColor = TFT_WHITE;
 constexpr uint16_t kEyeEdgeColor = kEyeColor;
 constexpr float kTouchTravelX = 70.0f;
 constexpr float kTouchTravelY = 56.0f;
-constexpr float kTiltTravelX = 68.0f;
-constexpr float kTiltTravelY = 54.0f;
-constexpr float kTiltLeadTravelX = 18.0f;
-constexpr float kTiltLeadTravelY = 14.0f;
-constexpr float kTiltSafeLimitX = 74.0f;
-constexpr float kTiltSafeLimitY = 59.0f;
+// Passive IMU motion should feel alive without pulling the expression away
+// from the visual center. Touch and authored reactions retain their wider
+// ranges; only gravity/gyro-driven gaze uses this compact safety ellipse.
+constexpr float kTiltTravelX = 44.0f;
+constexpr float kTiltTravelY = 34.0f;
+constexpr float kTiltLeadTravelX = 8.0f;
+constexpr float kTiltLeadTravelY = 6.0f;
+constexpr float kTiltSafeLimitX = 47.0f;
+constexpr float kTiltSafeLimitY = 36.0f;
 constexpr float kShakeTravelX = 58.0f;
 constexpr float kShakeTravelY = 44.0f;
 constexpr uint32_t kEyeMessageFadeInMs = 420;
@@ -816,13 +819,13 @@ void AvatarEngine::commitSwipe(int8_t direction, uint32_t nowMs,
 void AvatarEngine::setTiltTarget(float normalizedX, float normalizedY,
                                  float motionLeadX, float motionLeadY) {
   const auto shapeTilt = [](float value) {
-    constexpr float kDeadZone = 0.075f;
+    constexpr float kDeadZone = 0.11f;
     const float clamped = std::max(-1.0f, std::min(1.0f, value));
     const float magnitude = fabsf(clamped);
     if (magnitude <= kDeadZone) return 0.0f;
     const float normalized = (magnitude - kDeadZone) / (1.0f - kDeadZone);
-    // Responsive near the center, progressively damped near the edge.
-    const float shaped = normalized * (1.4f - 0.4f * normalized * normalized);
+    // Keep small wrist noise calm and approach the edge progressively.
+    const float shaped = normalized * (1.15f - 0.15f * normalized * normalized);
     return copysignf(shaped, clamped);
   };
   tiltTargetX_ = shapeTilt(normalizedX) * kTiltTravelX;
@@ -916,9 +919,9 @@ void AvatarEngine::updateInteraction(uint32_t nowMs) {
   const float normalizedY = touchActive_
                                 ? touchTargetY_ / kTouchTravelY
                                 : tiltTargetY_ / kTiltTravelY;
-  const float targetYaw = normalizedX * (touchActive_ ? 32.0f : 14.0f);
-  const float targetPitch = normalizedY * (touchActive_ ? 24.0f : 11.0f);
-  const float targetRoll = -normalizedX * (touchActive_ ? 7.0f : 3.0f);
+  const float targetYaw = normalizedX * (touchActive_ ? 32.0f : 8.0f);
+  const float targetPitch = normalizedY * (touchActive_ ? 24.0f : 6.0f);
+  const float targetRoll = -normalizedX * (touchActive_ ? 7.0f : 1.5f);
   const float headStiffness = touchActive_ ? 46.0f : 15.0f;
   const float headDamping = touchActive_ ? 11.5f : 7.0f;
 

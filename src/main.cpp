@@ -1292,7 +1292,7 @@ void handleImuInteraction(uint32_t nowMs) {
   const float screenAccelZ = imu.accel.z;
   const float screenGyroX = imu.gyro.y;
   const float screenGyroY = imu.gyro.x;
-  constexpr float kFilterAmount = 0.32f;
+  constexpr float kFilterAmount = 0.24f;
   if (imuCalibrationCount == 0) {
     filteredAccelX = screenAccelX;
     filteredAccelY = screenAccelY;
@@ -1313,15 +1313,15 @@ void handleImuInteraction(uint32_t nowMs) {
                     neutralAccelX, neutralAccelY);
     }
   } else {
-    // Roughly 0.28 g of tilt reaches full gaze travel. Neutral adaptation is
+    // Roughly 0.38 g of tilt reaches full gaze travel. Neutral adaptation is
     // deliberately very slow so eyes keep looking in the chosen direction
     // while the user holds the device at an angle. Gyroscope feed-forward
     // makes the eyes lead during rotation; gravity keeps the final direction.
     neutralAccelX += (filteredAccelX - neutralAccelX) * 0.00015f;
     neutralAccelY += (filteredAccelY - neutralAccelY) * 0.00015f;
-    avatar.setTiltTarget(-(filteredAccelX - neutralAccelX) / 0.28f,
-                         -(filteredAccelY - neutralAccelY) / 0.28f,
-                         -screenGyroY / 180.0f, screenGyroX / 180.0f);
+    avatar.setTiltTarget(-(filteredAccelX - neutralAccelX) / 0.38f,
+                         -(filteredAccelY - neutralAccelY) / 0.38f,
+                         -screenGyroY / 280.0f, screenGyroX / 280.0f);
   }
 
   const float deltaX = screenAccelX - previousAccelX;

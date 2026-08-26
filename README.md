@@ -43,7 +43,7 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 | A / B in the root menu | Click A to browse, double-click A to confirm, and press B to close |
 | Battery page | Show percentage and map remaining charge to right-eye opening; B returns |
 | Brightness / sound page | Click A to cycle levels quickly, B returns; right-eye opening follows the level |
-| Network page | Double-click A to explicitly start pairing; B cancels or returns, and saved credentials remain until a new connection succeeds |
+| Network page | A root-menu double click only opens status; once inside, hold A again for about two seconds to start pairing. B cancels or returns, and saved credentials remain until a new connection succeeds |
 | Hold A+B | Enter / exit hardware diagnostics |
 
 `idle`, `listening` and `thinking` are persistent base states. Other reactions return to the previously active base state when their animation finishes instead of always returning to idle.

@@ -83,6 +83,7 @@ bool eyeMenuMode = false;
 bool wifiPairingInputArmed = false;
 bool wifiPairingHoldLatched = false;
 bool eyeMenuInputArmed = false;
+bool eyeMenuWifiHoldLatched = false;
 bool rtcValid = false;
 bool chargingStateKnown = false;
 bool charging = false;
@@ -100,6 +101,7 @@ uint32_t soundChangedMs = 0;
 uint32_t soundRepeatAtMs = 0;
 uint32_t statusAClickDeadlineMs = 0;
 uint32_t eyeMenuAClickDeadlineMs = 0;
+uint32_t eyeMenuPageReadyAtMs = 0;
 uint32_t lastPowerSampleMs = 0;
 uint32_t lastRtcSampleMs = 0;
 uint32_t lastDimRenderMs = 0;
@@ -680,6 +682,10 @@ void renderEyeMenu(uint32_t nowMs) {
     constexpr const char* labels[] = {"电量", "亮度", "音量", "网络"};
     leftText = labels[eyeMenuIndex % 4];
     rightText = String((eyeMenuIndex % 4) + 1) + "/4";
+    // Eye messages are intentionally rendered only while the energy/status
+    // layer is active. Keep that layer enabled for the otherwise pure root
+    // menu so its labels remain visible inside the eyes.
+    avatar.setEnergyUi(1.0f, false, false);
   } else if (eyeMenuPage == EyeMenuPage::Battery) {
     samplePower();
     leftText = charging ? "充电" : "电量";
@@ -704,7 +710,7 @@ void renderEyeMenu(uint32_t nowMs) {
     switch (wifiPairing.state()) {
       case WifiPairing::State::Offline:
         leftText = "未连";
-        rightText = "双击";
+        rightText = "长按";
         break;
       case WifiPairing::State::Connecting:
         leftText = "连接";
@@ -718,13 +724,13 @@ void renderEyeMenu(uint32_t nowMs) {
         break;
       case WifiPairing::State::Connected:
         leftText = "已连";
-        rightText = "双击";
+        rightText = "长按";
         eyeLevel = wifiPairing.signalLevel();
         expression = ExpressionId::Listening;
         break;
       case WifiPairing::State::Failed:
         leftText = "失败";
-        rightText = "双击";
+        rightText = "长按";
         expression = ExpressionId::Sad;
         break;
     }
@@ -748,7 +754,9 @@ void openEyeMenu(uint32_t nowMs) {
     eyeMenuIndex = 0;
     eyeMenuAClickCount = 0;
     eyeMenuAClickDeadlineMs = 0;
+    eyeMenuPageReadyAtMs = 0;
     eyeMenuInputArmed = false;
+    eyeMenuWifiHoldLatched = false;
     playUiSound(UiSound::Open);
     startVibration(120, 34);
   }
@@ -763,7 +771,9 @@ void closeEyeMenu(uint32_t nowMs) {
   eyeMenuPage = EyeMenuPage::Root;
   eyeMenuAClickCount = 0;
   eyeMenuAClickDeadlineMs = 0;
+  eyeMenuPageReadyAtMs = 0;
   eyeMenuInputArmed = false;
+  eyeMenuWifiHoldLatched = false;
   avatar.releaseTouch();
   avatar.clearEnergyUi();
   avatar.show(eyeMenuReturnExpression, nowMs, false, 240);
@@ -776,6 +786,8 @@ void openSelectedEyeMenuPage(uint32_t nowMs) {
   eyeMenuPage = static_cast<EyeMenuPage>(eyeMenuIndex + 1);
   eyeMenuAClickCount = 0;
   eyeMenuAClickDeadlineMs = 0;
+  eyeMenuPageReadyAtMs = nowMs + 350;
+  eyeMenuWifiHoldLatched = false;
   startVibration(125, 34);
   playUiSound(UiSound::Confirm);
   renderEyeMenu(nowMs);
@@ -806,9 +818,40 @@ void handleEyeMenuInput(uint32_t nowMs) {
         wifiPairing.consumeStateChanged();
       }
       eyeMenuPage = EyeMenuPage::Root;
+      eyeMenuPageReadyAtMs = nowMs + 180;
+      eyeMenuWifiHoldLatched = false;
       startVibration(95, 24);
       playUiSound(UiSound::Close);
       renderEyeMenu(nowMs);
+    }
+    return;
+  }
+
+  if (!reached(nowMs, eyeMenuPageReadyAtMs) &&
+      eyeMenuPage != EyeMenuPage::Root) {
+    return;
+  }
+
+  if (eyeMenuPage == EyeMenuPage::Wifi) {
+    if (M5.BtnA.wasReleased()) eyeMenuWifiHoldLatched = false;
+    if (!eyeMenuWifiHoldLatched &&
+        M5.BtnA.pressedFor(kWifiPairingHoldMs)) {
+      eyeMenuWifiHoldLatched = true;
+      noteActivity(nowMs);
+      if (!wifiPairing.portalActive()) {
+        wifiPairing.startPortal(nowMs);
+        wifiPairing.consumeStateChanged();
+        startVibration(150, 42);
+        playUiSound(UiSound::Open);
+        renderEyeMenu(nowMs);
+      }
+      return;
+    }
+    if (M5.BtnA.wasClicked()) {
+      noteActivity(nowMs);
+      startVibration(70, 18);
+      avatar.setEyeMessage("长按", "配网", nowMs, 1500);
+      avatar.invalidate();
     }
     return;
   }
@@ -857,13 +900,6 @@ void handleEyeMenuInput(uint32_t nowMs) {
   eyeMenuAClickDeadlineMs = 0;
   if (eyeMenuPage == EyeMenuPage::Root) {
     openSelectedEyeMenuPage(nowMs);
-  } else if (eyeMenuPage == EyeMenuPage::Wifi &&
-             !wifiPairing.portalActive()) {
-    wifiPairing.startPortal(nowMs);
-    wifiPairing.consumeStateChanged();
-    startVibration(150, 42);
-    playUiSound(UiSound::Open);
-    renderEyeMenu(nowMs);
   }
 }
 

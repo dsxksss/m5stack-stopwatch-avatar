@@ -33,28 +33,61 @@ Version 0.6.2 was built, flashed and exercised on real M5Stack StopWatch hardwar
 - synchronize China Standard Time over NTP after Wi-Fi connects, write it to the RX8130 RTC, and use the RTC for quiet-hour sleepy behavior;
 - semantic serial commands provide a stable input boundary for future voice recognition or external control.
 
-## Interaction map
+## Interaction guide
+
+The display gestures and the physical A/B buttons have separate roles. Short A/B presses on the normal face intentionally do nothing, so they cannot accidentally change an expression or erase a saved network.
+
+### Normal face and display gestures
 
 | Input | Result |
 | --- | --- |
-| Tap | `happy` |
-| Double tap | `surprised` |
-| Hold and move | Eyes and head continuously follow the touch point |
-| Long press | `angry` |
-| Swipe left / right | Give a brief curious or confused reaction based on direction, then restore the current state |
-| Swipe up | `surprised` |
-| Swipe down | Show battery percentage and charging state, then restore automatically; B returns early |
-| Slowly tilt the device | Gaze continuously follows the tilt direction |
-| Quickly move the device | Add a brief inertial eye/head response without changing expression |
-| A / B on the normal face | Hold A to open the eye menu; short A/B presses do not switch expressions |
-| A / B in the root menu | Click A to browse, double-click A to confirm, and press B to close |
-| Brightness / sound page | Click A to cycle levels quickly, B returns; right-eye opening follows the level |
-| Scheduled quiet page | Disabled by default. Click A to toggle and save the `22:00–07:00` mute window, B returns; disabling mute does not disable the sleepy night expression |
-| Network page | The resting view only reports Wi-Fi status. Hold A to reveal the pair/change-network prompt and keep holding for about two seconds to start pairing; B cancels or returns, and saved credentials remain until a new connection succeeds |
-| Version page | Read-only eye view showing firmware version `0.6.2`; B returns |
-| Hold A+B | Enter / exit hardware diagnostics |
+| Tap the display | Brief `happy` reaction |
+| Double-tap the display | Brief `surprised` reaction |
+| Hold the display in place for about 650 ms | Brief `angry` reaction |
+| Press without crossing the swipe threshold | Eyes and head follow the touch point |
+| Swipe right | Brief `curious` reaction |
+| Swipe left | Brief `confused` reaction |
+| Swipe up | Brief `surprised` reaction |
+| Swipe down | Open the immersive battery expression |
+| Slowly tilt the device | Gaze follows the tilt inside a restricted centered motion area |
+| Move the device quickly | Add a short inertial eye/head response without changing expression |
 
-`idle`, `listening` and `thinking` are persistent base states. Other reactions return to the previously active base state when their animation finishes instead of always returning to idle.
+`idle`, `listening` and `thinking` are persistent base states. Tap, hold, swipe, charging and low-battery reactions are temporary and restore the previous base state automatically.
+
+### Physical buttons and modes
+
+| Current mode | A | B | A+B |
+| --- | --- | --- | --- |
+| Normal face | Hold for about 800 ms to open the eye menu; a short press does nothing | Short press does nothing | Hold both for about one second to enter diagnostics |
+| Root eye menu | Single-click to move to the next item; double-click to open the selected item | Close the menu and restore the previous face | — |
+| Brightness page | Single-click to cycle through four levels | Return to the root menu | — |
+| Sound page | Single-click to cycle through mute plus four volume levels | Return to the root menu | — |
+| Scheduled quiet page | Single-click to toggle scheduled mute | Return to the root menu | — |
+| Network page | Hold for about 1.8 seconds to pair, retry or change network; a short press only refreshes the status | Cancel an active portal and return to the root menu | — |
+| Version page | Read-only; a click only gives haptic feedback | Return to the root menu | — |
+| Battery view | No setting action | Close early | — |
+| Diagnostics | Test vibration | Redraw the diagnostic screen | Hold both for about one second to return to the face |
+
+A single A click in the root menu is committed after the 420 ms double-click window. This small delay lets a second click open the current item instead of advancing it. Touch remains available inside eye-menu pages for gaze following, but it does not alter settings.
+
+### Eye menu pages
+
+The menu stays within KK's expression: the item name is drawn in the left eye and its value or position is drawn in the right eye.
+
+1. **Brightness (`1/5`)** — A cycles display brightness through `60`, `100`, `150` and `220`. The right-eye opening represents the selected `1/4–4/4` level.
+2. **Sound (`2/5`)** — A cycles `0/4–4/4`; `0/4` is mute. The right-eye opening represents the volume level, and non-muted selections play a short preview.
+3. **Scheduled quiet (`3/5`)** — A toggles the saved `22:00–07:00` sound mute. It is disabled by default and affects sound only; the RTC-driven sleepy night expression remains independent.
+4. **Network (`4/5`)** — Shows disconnected, connecting, connected or failed status. Pressing A reveals `pair`, `retry` or `change network`; keep holding for about 1.8 seconds to start the temporary `KK-XXXX` access point. Connect a phone to it and use the captive portal to choose a 2.4 GHz Wi-Fi network. `XXXX` is the device-specific code shown in the eye, not a password. The old credentials remain saved unless the candidate network connects successfully. B cancels pairing safely.
+5. **Version (`5/5`)** — Displays firmware version `0.6.2`; it does not change a setting.
+
+### Battery, automatic reactions and screen power
+
+- Swipe down to show a battery-aware expression. The left eye reports charging or a short energy description, the right eye shows the measured percentage, and eye opening also represents the level.
+- After about 3.4 seconds the battery text exits with a blink and head shake; the previous centered face returns about 0.9 seconds later. Tap the display or press B to close it early.
+- Connecting power triggers `excited`; disconnecting power triggers `curious`. At 15% or below, KK gives a periodic `sleepy` reminder while not charging.
+- After 45 seconds without activity, the display dims to at most `24/255` and rendering drops to 20 fps. After 60 seconds, the AMOLED is cleared and switched off completely.
+- Touch, either physical button or confirmed device movement wakes the display. The eye menu, battery view and diagnostics stay awake while in use.
+- In the configured night window, entering the dim state may use the sleepy expression. The eye-menu scheduled-mute switch controls only sound during that window and is off by default.
 
 ## Hardware
 

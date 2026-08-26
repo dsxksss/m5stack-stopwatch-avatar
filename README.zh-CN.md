@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-[![构建固件](https://github.com/Trentct/m5stack-stopwatch-avatar/actions/workflows/build.yml/badge.svg)](https://github.com/Trentct/m5stack-stopwatch-avatar/actions/workflows/build.yml)
+[![构建固件](https://github.com/dsxksss/m5stack-stopwatch-avatar/actions/workflows/build.yml/badge.svg)](https://github.com/dsxksss/m5stack-stopwatch-avatar/actions/workflows/build.yml)
 [![许可证：AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
 认识一下 **KK**：一个住在 M5Stack StopWatch 里的小表情角色。
@@ -10,6 +10,12 @@
 KK 运行在 M5Stack StopWatch 的圆形 AMOLED 屏幕上。它的眼睛、眼皮、眉线、关键帧和过渡均由 C++ 实时绘制，不使用图片序列帧。产品画面保持纯黑背景，并针对 466 × 466 圆屏、局部刷新和直接交互进行了优化。
 
 > 这是一个社区项目，与 M5Stack 官方没有隶属或背书关系。
+
+## 当前固件
+
+当前固件版本为 **0.6.2**。此版本修复了电量查看手势的生命周期问题：向下滑动打开电量表情时会立即释放拖动偏移，状态退出时再进行防御性复位。电量提示结束后，双眼会回到居中的基础表情，不再停留在屏幕下方。
+
+0.6.2 已在 M5Stack StopWatch 真机完成编译、烧录和重复下滑验证。电量提示均能自动正常退出，运行帧率约为 59–60 fps，TE 垂直同步为 100%，未出现持续帧超时。
 
 ## 主要特点
 

@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-[![Build firmware](https://github.com/Trentct/m5stack-stopwatch-avatar/actions/workflows/build.yml/badge.svg)](https://github.com/Trentct/m5stack-stopwatch-avatar/actions/workflows/build.yml)
+[![Build firmware](https://github.com/dsxksss/m5stack-stopwatch-avatar/actions/workflows/build.yml/badge.svg)](https://github.com/dsxksss/m5stack-stopwatch-avatar/actions/workflows/build.yml)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
 Meet **KK** — a tiny expressive face living inside the M5Stack StopWatch.
@@ -10,6 +10,12 @@ Meet **KK** — a tiny expressive face living inside the M5Stack StopWatch.
 KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED display. Its eyes, eyelids, brows, keyframes and transitions are drawn in real time with C++, without image-frame animation. The pure-black visual system is optimized for the 466 × 466 circular screen, partial updates and direct interaction.
 
 > Community project. Not affiliated with or endorsed by M5Stack.
+
+## Current firmware
+
+The current firmware version is **0.6.2**. This release fixes the battery-view swipe lifecycle: after a downward swipe, KK now releases the drag offset as soon as the battery expression opens and defensively resets it again when the view closes. The eyes return to the centered base expression instead of remaining below the screen.
+
+Version 0.6.2 was built, flashed and exercised on real M5Stack StopWatch hardware. The battery view completed repeated automatic dismissals at about 59–60 fps with 100% TE synchronization and no recurring frame timeout.
 
 ## Highlights
 

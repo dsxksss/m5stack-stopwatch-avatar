@@ -70,7 +70,7 @@ struct CompanionSettings {
   uint32_t screenOffAfterMs = kDefaultScreenOffAfterMs;
   uint8_t quietStartHour = 22;
   uint8_t quietEndHour = 7;
-  bool quietMuteEnabled = true;
+  bool quietMuteEnabled = false;
 };
 
 M5IOE1 ioe;
@@ -171,7 +171,7 @@ void loadSettings() {
       kDefaultScreenOffAfterMs);
   settings.quietStartHour = preferences.getUChar("quiet_start", 22);
   settings.quietEndHour = preferences.getUChar("quiet_end", 7);
-  settings.quietMuteEnabled = preferences.getBool("quiet_mute", true);
+  settings.quietMuteEnabled = preferences.getBool("quiet_mute", false);
 
   // Version 1 used 60 s for dimming and 300 s for panel sleep. Migrate that
   // exact old default so existing devices now become fully dark at 60 s.

@@ -43,7 +43,7 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 | A / B on the normal face | Hold A to open the eye menu; short A/B presses do not switch expressions |
 | A / B in the root menu | Click A to browse, double-click A to confirm, and press B to close |
 | Brightness / sound page | Click A to cycle levels quickly, B returns; right-eye opening follows the level |
-| Scheduled quiet page | Click A to toggle and save the `22:00–07:00` mute window, B returns; disabling mute does not disable the sleepy night expression |
+| Scheduled quiet page | Disabled by default. Click A to toggle and save the `22:00–07:00` mute window, B returns; disabling mute does not disable the sleepy night expression |
 | Network page | The resting view only reports Wi-Fi status. Hold A to reveal the pair/change-network prompt and keep holding for about two seconds to start pairing; B cancels or returns, and saved credentials remain until a new connection succeeds |
 | Hold A+B | Enter / exit hardware diagnostics |
 

@@ -34,6 +34,7 @@ class WifiPairing {
   const char* stateName() const;
   const String& accessPointName() const { return accessPointName_; }
   const String& accessPointCode() const { return accessPointCode_; }
+  const char* accessPointPassword() const { return kAccessPointPassword; }
   String localIp() const;
   float signalLevel() const;
 

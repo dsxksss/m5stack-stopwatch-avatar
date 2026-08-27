@@ -18,8 +18,8 @@ constexpr uint32_t kVsyncTimeoutUs = 22000;
 constexpr uint16_t kBackground = TFT_BLACK;
 constexpr uint16_t kEyeColor = TFT_WHITE;
 // A mid-gray moving contour caused visible RGB sub-pixel breakup on the
-// AMOLED. Keep moving eye geometry neutral white; text uses its own softer
-// grayscale fringe because it moves much less.
+// AMOLED. Keep moving eye geometry neutral white. Eye text is rendered in one
+// pass so font rasterization cannot consume the animation frame budget.
 constexpr uint16_t kEyeEdgeColor = kEyeColor;
 constexpr float kTouchTravelX = 70.0f;
 constexpr float kTouchTravelY = 56.0f;
@@ -39,6 +39,15 @@ constexpr uint32_t kEyeMessageFadeOutMs = 260;
 constexpr uint32_t kEyeMessageBreathPeriodMs = 1800;
 constexpr float kEyeMessageBreathDepth = 0.10f;
 constexpr float kEyeMessageFloatPixels = 0.75f;
+constexpr uint32_t kNarrativeEyeCloseMs = 320;
+constexpr uint32_t kNarrativeTextFadeMs = 260;
+constexpr uint32_t kNarrativeEyeOpenMs = 360;
+constexpr int kNarrativeTextWidth = 310;
+constexpr int kNarrativeLineHeight = 38;
+constexpr int kNarrativeTextLeft = 78;
+constexpr uint8_t kNarrativeTextLuminance = 214;
+constexpr uint8_t kNarrativePageIndicatorLuminance = 96;
+constexpr int kNarrativePageIndicatorBottomMargin = 66;
 
 volatile uint32_t gTearingEffectEdges = 0;
 
@@ -61,6 +70,13 @@ AvatarEngine::EyePose makeAngledEye(float x, float y, float width,
                                     float roundness = 1.0f) {
   return makeEye(x, y, width, height, roundness, 0.0f, 0.0f, 0.0f,
                  -230.0f, 0.0f, 0.0f, angle);
+}
+
+AvatarEngine::EyePose makeAngryEye(float x, float y, float width,
+                                   float height, float angle, float browTilt,
+                                   float browOpacity) {
+  return makeEye(x, y, width, height, 1.0f, 0.0f, 0.0f, 0.0f,
+                 -150.0f, browTilt, browOpacity, angle);
 }
 
 AvatarEngine::Pose makePose(const AvatarEngine::EyePose& left,
@@ -270,22 +286,22 @@ const AvatarEngine::Keyframe kConfusedFrames[] = {
 };
 
 const AvatarEngine::Keyframe kAngryFrames[] = {
-    {makePose(makeEye(-220.0f, -18.0f, 205.0f, 245.0f, 0.8f, 0.15f,
-                           0.45f, 0.0f, -190.0f, 17.0f, 0.72f),
-              makeEye(220.0f, -18.0f, 205.0f, 245.0f, 0.8f, 0.15f,
-                           -0.45f, 0.0f, -190.0f, -17.0f, 0.72f),
+    {makePose(makeAngryEye(-220.0f, -18.0f, 220.0f, 160.0f, 13.0f,
+                           15.0f, 0.62f),
+              makeAngryEye(220.0f, -18.0f, 220.0f, 160.0f, -13.0f,
+                           -15.0f, 0.62f),
               0.985f, 0.0f, 4.0f),
      145, 80, AvatarEngine::Easing::Snappy},
-    {makePose(makeEye(-212.0f, -28.0f, 220.0f, 270.0f, 0.72f, 0.22f,
-                           0.55f, 0.0f, -205.0f, 20.0f, 1.0f),
-              makeEye(212.0f, -28.0f, 220.0f, 270.0f, 0.72f, 0.22f,
-                           -0.55f, 0.0f, -205.0f, -20.0f, 1.0f),
+    {makePose(makeAngryEye(-212.0f, -28.0f, 238.0f, 150.0f, 16.0f,
+                           18.0f, 0.82f),
+              makeAngryEye(212.0f, -28.0f, 238.0f, 150.0f, -16.0f,
+                           -18.0f, 0.82f),
               1.015f, 0.0f, 4.0f),
      230, 1160, AvatarEngine::Easing::Spring},
-    {makePose(makeEye(-218.0f, -20.0f, 208.0f, 248.0f, 0.76f, 0.18f,
-                           0.48f, 0.0f, -194.0f, 18.0f, 0.85f),
-              makeEye(218.0f, -20.0f, 208.0f, 248.0f, 0.76f, 0.18f,
-                           -0.48f, 0.0f, -194.0f, -18.0f, 0.85f),
+    {makePose(makeAngryEye(-218.0f, -20.0f, 226.0f, 156.0f, 14.0f,
+                           16.0f, 0.72f),
+              makeAngryEye(218.0f, -20.0f, 226.0f, 156.0f, -14.0f,
+                           -16.0f, 0.72f),
               1.0f, 0.0f, 3.0f),
      190, 350, AvatarEngine::Easing::Smooth},
 };
@@ -508,6 +524,20 @@ void projectEyeOntoHead(AvatarEngine::EyePose& eye, float side,
 
 bool reached(uint32_t now, uint32_t deadline) {
   return deadline != 0 && static_cast<int32_t>(now - deadline) >= 0;
+}
+
+size_t utf8GlyphBytes(const String& text, size_t byteIndex) {
+  if (byteIndex >= text.length()) return 0;
+  const uint8_t lead = static_cast<uint8_t>(text[byteIndex]);
+  size_t glyphBytes = 1;
+  if ((lead & 0xE0) == 0xC0) {
+    glyphBytes = 2;
+  } else if ((lead & 0xF0) == 0xE0) {
+    glyphBytes = 3;
+  } else if ((lead & 0xF8) == 0xF0) {
+    glyphBytes = 4;
+  }
+  return std::min(glyphBytes, text.length() - byteIndex);
 }
 
 }  // namespace
@@ -994,12 +1024,385 @@ void AvatarEngine::setEnergyUi(float normalizedLevel, bool charging,
 
 void AvatarEngine::setEyeMessage(const String& leftText,
                                  const String& rightText, uint32_t nowMs,
-                                 uint32_t holdMs) {
+                                 uint32_t holdMs, bool vertical) {
   leftEyeMessage_ = leftText;
   rightEyeMessage_ = rightText;
+  eyeMessageVertical_ = vertical;
   eyeMessageStartedMs_ = nowMs;
   eyeMessageEndsAtMs_ = nowMs + holdMs;
   forceRender_ = true;
+}
+
+bool AvatarEngine::showNarrativeText(const String& text, uint32_t nowMs,
+                                     uint16_t glyphIntervalMs) {
+  narrativeText_ = text;
+  narrativeText_.trim();
+  narrativeText_.replace("\r\n", "\n");
+  narrativeText_.replace('\r', '\n');
+  if (narrativeText_.isEmpty()) return false;
+
+  narrativeGlyphIntervalMs_ =
+      std::max<uint16_t>(24, std::min<uint16_t>(glyphIntervalMs, 240));
+  layoutNarrativeText();
+  if (narrativeLineCount_ == 0 || narrativeGlyphCount_ == 0) return false;
+
+  releaseTouch();
+  releaseSwipe();
+  narrativeActive_ = true;
+  narrativeDismissAfterFade_ = false;
+  narrativePhase_ = NarrativePhase::ClosingEyes;
+  narrativePageIndex_ = 0;
+  narrativeCanvasPrepared_ = false;
+  narrativeRenderedGlyphs_ = 0;
+  narrativeFadeErasedWidth_ = 0;
+  narrativePhaseStartedMs_ = nowMs;
+  forceRender_ = true;
+  requiresFullClear_ = true;
+  previousLeftBounds_.valid = false;
+  previousRightBounds_.valid = false;
+  Serial.printf("Narrative text started: glyphs=%u lines=%u pages=%u\n",
+                narrativeGlyphCount_, narrativeLineCount_,
+                narrativePageCount_);
+  return true;
+}
+
+void AvatarEngine::layoutNarrativeText() {
+  narrativeGlyphCount_ = 0;
+  narrativeLineCount_ = 0;
+  narrativePageCount_ = 0;
+
+  size_t byteIndex = 0;
+  while (byteIndex < narrativeText_.length() &&
+         narrativeGlyphCount_ < kNarrativeMaxGlyphs) {
+    narrativeGlyphOffsets_[narrativeGlyphCount_++] = byteIndex;
+    byteIndex += utf8GlyphBytes(narrativeText_, byteIndex);
+  }
+  narrativeGlyphOffsets_[narrativeGlyphCount_] = byteIndex;
+  if (byteIndex < narrativeText_.length()) {
+    narrativeText_.remove(byteIndex);
+  }
+
+  M5.Display.setFont(&fonts::efontCN_24_b);
+  M5.Display.setTextSize(1);
+  uint16_t lineStartGlyph = 0;
+  int lineWidth = 0;
+  for (uint16_t glyphIndex = 0; glyphIndex < narrativeGlyphCount_;
+       ++glyphIndex) {
+    const String glyph = narrativeText_.substring(
+        narrativeGlyphOffsets_[glyphIndex],
+        narrativeGlyphOffsets_[glyphIndex + 1]);
+    if (glyph == "\n") {
+      if (narrativeLineCount_ < kNarrativeMaxLines) {
+        narrativeLineStartGlyph_[narrativeLineCount_] = lineStartGlyph;
+        narrativeLineEndGlyph_[narrativeLineCount_] = glyphIndex;
+        ++narrativeLineCount_;
+      }
+      lineStartGlyph = glyphIndex + 1;
+      lineWidth = 0;
+      continue;
+    }
+
+    const int glyphWidth = std::max(1, M5.Display.textWidth(glyph));
+    if (lineWidth > 0 && lineWidth + glyphWidth > kNarrativeTextWidth) {
+      if (narrativeLineCount_ < kNarrativeMaxLines) {
+        narrativeLineStartGlyph_[narrativeLineCount_] = lineStartGlyph;
+        narrativeLineEndGlyph_[narrativeLineCount_] = glyphIndex;
+        ++narrativeLineCount_;
+      }
+      lineStartGlyph = glyphIndex;
+      lineWidth = 0;
+    }
+    lineWidth += glyphWidth;
+  }
+
+  if (lineStartGlyph < narrativeGlyphCount_ &&
+      narrativeLineCount_ < kNarrativeMaxLines) {
+    narrativeLineStartGlyph_[narrativeLineCount_] = lineStartGlyph;
+    narrativeLineEndGlyph_[narrativeLineCount_] = narrativeGlyphCount_;
+    ++narrativeLineCount_;
+  }
+  narrativePageCount_ =
+      (narrativeLineCount_ + kNarrativeLinesPerPage - 1) /
+      kNarrativeLinesPerPage;
+}
+
+uint16_t AvatarEngine::narrativePageGlyphCount(uint8_t page) const {
+  const uint8_t firstLine = page * kNarrativeLinesPerPage;
+  const uint8_t lastLine = std::min<uint8_t>(
+      narrativeLineCount_, firstLine + kNarrativeLinesPerPage);
+  uint16_t total = 0;
+  for (uint8_t line = firstLine; line < lastLine; ++line) {
+    total += narrativeLineEndGlyph_[line] - narrativeLineStartGlyph_[line];
+  }
+  return total;
+}
+
+void AvatarEngine::beginNarrativeFade(uint32_t nowMs,
+                                      bool dismissAfterFade) {
+  narrativeDismissAfterFade_ = dismissAfterFade;
+  narrativePhase_ = NarrativePhase::FadingText;
+  narrativePhaseStartedMs_ = nowMs;
+  narrativeFadeErasedWidth_ = 0;
+  forceRender_ = true;
+}
+
+void AvatarEngine::advanceNarrativeText(uint32_t nowMs) {
+  if (!narrativeActive_) return;
+  switch (narrativePhase_) {
+    case NarrativePhase::ClosingEyes:
+      narrativePhase_ = NarrativePhase::Typing;
+      narrativePhaseStartedMs_ = nowMs;
+      narrativeCanvasPrepared_ = false;
+      narrativeRenderedGlyphs_ = 0;
+      requiresFullClear_ = true;
+      Serial.println("Narrative advance: skipped closing transition");
+      break;
+    case NarrativePhase::Typing:
+      narrativePhase_ = NarrativePhase::Holding;
+      narrativePhaseStartedMs_ = nowMs;
+      Serial.printf("Narrative advance: page %u/%u revealed\n",
+                    narrativePageIndex_ + 1, narrativePageCount_);
+      break;
+    case NarrativePhase::Holding:
+      beginNarrativeFade(nowMs, false);
+      Serial.printf("Narrative advance: page %u/%u turning\n",
+                    narrativePageIndex_ + 1, narrativePageCount_);
+      break;
+    case NarrativePhase::FadingText:
+      narrativePhaseStartedMs_ = nowMs - kNarrativeTextFadeMs;
+      break;
+    case NarrativePhase::OpeningEyes:
+      cancelNarrativeText();
+      break;
+    case NarrativePhase::Inactive:
+      break;
+  }
+  forceRender_ = true;
+}
+
+void AvatarEngine::dismissNarrativeText(uint32_t nowMs) {
+  if (!narrativeActive_) return;
+  if (narrativePhase_ == NarrativePhase::ClosingEyes) {
+    narrativePhase_ = NarrativePhase::OpeningEyes;
+    narrativePhaseStartedMs_ = nowMs;
+    requiresFullClear_ = true;
+  } else if (narrativePhase_ != NarrativePhase::OpeningEyes) {
+    beginNarrativeFade(nowMs, true);
+  }
+  Serial.printf("Narrative dismiss requested: page %u/%u\n",
+                narrativePageIndex_ + 1, narrativePageCount_);
+  forceRender_ = true;
+}
+
+void AvatarEngine::cancelNarrativeText() {
+  if (!narrativeActive_) return;
+  narrativeActive_ = false;
+  narrativeDismissAfterFade_ = false;
+  narrativePhase_ = NarrativePhase::Inactive;
+  narrativeText_ = "";
+  narrativeGlyphCount_ = 0;
+  narrativeLineCount_ = 0;
+  narrativePageCount_ = 0;
+  narrativePageIndex_ = 0;
+  narrativeCanvasPrepared_ = false;
+  narrativeRenderedGlyphs_ = 0;
+  narrativeFadeErasedWidth_ = 0;
+  forceRender_ = true;
+  requiresFullClear_ = true;
+  previousLeftBounds_.valid = false;
+  previousRightBounds_.valid = false;
+}
+
+void AvatarEngine::updateNarrativeText(uint32_t nowMs) {
+  if (!narrativeActive_) return;
+  const uint32_t elapsed = nowMs - narrativePhaseStartedMs_;
+  switch (narrativePhase_) {
+    case NarrativePhase::ClosingEyes:
+      if (elapsed >= kNarrativeEyeCloseMs) {
+        narrativePhase_ = NarrativePhase::Typing;
+        narrativePhaseStartedMs_ = nowMs;
+        narrativeCanvasPrepared_ = false;
+        narrativeRenderedGlyphs_ = 0;
+        narrativeFadeErasedWidth_ = 0;
+        requiresFullClear_ = true;
+      }
+      break;
+    case NarrativePhase::Typing: {
+      const uint16_t pageGlyphs =
+          narrativePageGlyphCount(narrativePageIndex_);
+      if (elapsed / narrativeGlyphIntervalMs_ >= pageGlyphs) {
+        narrativePhase_ = NarrativePhase::Holding;
+        narrativePhaseStartedMs_ = nowMs;
+      }
+      break;
+    }
+    case NarrativePhase::Holding:
+      break;
+    case NarrativePhase::FadingText:
+      if (elapsed >= kNarrativeTextFadeMs) {
+        if (!narrativeDismissAfterFade_) {
+          narrativePageIndex_ =
+              narrativePageIndex_ + 1 < narrativePageCount_
+                  ? narrativePageIndex_ + 1
+                  : 0;
+          narrativePhase_ = NarrativePhase::Typing;
+          narrativePhaseStartedMs_ = nowMs;
+          narrativeCanvasPrepared_ = false;
+          narrativeRenderedGlyphs_ = 0;
+          narrativeFadeErasedWidth_ = 0;
+        } else {
+          narrativePhase_ = NarrativePhase::OpeningEyes;
+          narrativePhaseStartedMs_ = nowMs;
+        }
+        requiresFullClear_ = true;
+      }
+      break;
+    case NarrativePhase::OpeningEyes:
+      if (elapsed >= kNarrativeEyeOpenMs) {
+        cancelNarrativeText();
+        Serial.println("Narrative text closed; expression restored");
+      }
+      break;
+    case NarrativePhase::Inactive:
+      break;
+  }
+}
+
+void AvatarEngine::drawNarrativeGlyph(uint16_t pageGlyphIndex,
+                                      uint8_t luminance) {
+  if (narrativePageIndex_ >= narrativePageCount_) return;
+  const uint8_t firstLine = narrativePageIndex_ * kNarrativeLinesPerPage;
+  const uint8_t lastLine = std::min<uint8_t>(
+      narrativeLineCount_, firstLine + kNarrativeLinesPerPage);
+  const uint8_t pageLineCount = lastLine - firstLine;
+  const int firstY = M5.Display.height() / 2 -
+                     static_cast<int>(pageLineCount - 1) *
+                         kNarrativeLineHeight / 2;
+
+  M5.Display.setFont(&fonts::efontCN_24_b);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(middle_left);
+  M5.Display.setTextColor(M5.Display.color565(luminance, luminance, luminance));
+
+  uint16_t remainingGlyph = pageGlyphIndex;
+  for (uint8_t lineOffset = 0; lineOffset < pageLineCount; ++lineOffset) {
+    const uint8_t line = firstLine + lineOffset;
+    const uint16_t lineStart = narrativeLineStartGlyph_[line];
+    const uint16_t lineGlyphs =
+        narrativeLineEndGlyph_[line] - lineStart;
+    if (remainingGlyph >= lineGlyphs) {
+      remainingGlyph -= lineGlyphs;
+      continue;
+    }
+
+    const uint16_t glyphIndex = lineStart + remainingGlyph;
+    const String prefix = narrativeText_.substring(
+        narrativeGlyphOffsets_[lineStart],
+        narrativeGlyphOffsets_[glyphIndex]);
+    const String glyph = narrativeText_.substring(
+        narrativeGlyphOffsets_[glyphIndex],
+        narrativeGlyphOffsets_[glyphIndex + 1]);
+    const int glyphX = kNarrativeTextLeft + M5.Display.textWidth(prefix);
+    const int lineY = firstY + lineOffset * kNarrativeLineHeight;
+    M5.Display.drawString(glyph, glyphX, lineY);
+    break;
+  }
+  M5.Display.setTextDatum(top_left);
+}
+
+void AvatarEngine::drawNarrativePageIndicator() {
+  if (narrativePageCount_ <= 1 ||
+      narrativePageIndex_ >= narrativePageCount_) {
+    return;
+  }
+
+  const String pageLabel = String(narrativePageIndex_ + 1) + "/" +
+                           String(narrativePageCount_);
+  const uint8_t luminance = kNarrativePageIndicatorLuminance;
+  M5.Display.setFont(&fonts::efontCN_16);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextColor(
+      M5.Display.color565(luminance, luminance, luminance));
+  M5.Display.drawString(pageLabel, M5.Display.width() / 2,
+                        M5.Display.height() -
+                            kNarrativePageIndicatorBottomMargin);
+  M5.Display.setTextDatum(top_left);
+}
+
+void AvatarEngine::drawNarrativePage(uint32_t nowMs) {
+  if (narrativePageIndex_ >= narrativePageCount_) return;
+  if (!narrativeCanvasPrepared_) {
+    M5.Display.fillScreen(kBackground);
+    drawNarrativePageIndicator();
+    narrativeCanvasPrepared_ = true;
+    narrativeRenderedGlyphs_ = 0;
+          narrativeFadeErasedWidth_ = 0;
+          Serial.printf("Narrative page opened: %u/%u\n",
+                        narrativePageIndex_ + 1, narrativePageCount_);
+  }
+
+  const uint16_t pageGlyphs =
+      narrativePageGlyphCount(narrativePageIndex_);
+  if (narrativePhase_ == NarrativePhase::Typing) {
+    const uint32_t elapsed = nowMs - narrativePhaseStartedMs_;
+    const uint16_t completedGlyphs = std::min<uint16_t>(
+        pageGlyphs, elapsed / narrativeGlyphIntervalMs_);
+    while (narrativeRenderedGlyphs_ < completedGlyphs) {
+      drawNarrativeGlyph(narrativeRenderedGlyphs_,
+                         kNarrativeTextLuminance);
+      ++narrativeRenderedGlyphs_;
+    }
+    if (completedGlyphs < pageGlyphs) {
+      const float progress =
+          (elapsed % narrativeGlyphIntervalMs_) /
+          static_cast<float>(narrativeGlyphIntervalMs_);
+      const uint8_t luminance = static_cast<uint8_t>(
+          lroundf(72.0f + smootherStep(progress) * 183.0f));
+      drawNarrativeGlyph(completedGlyphs, luminance);
+    }
+    return;
+  }
+
+  if (narrativePhase_ == NarrativePhase::Holding) {
+    const bool completedThisFrame = narrativeRenderedGlyphs_ < pageGlyphs;
+    while (narrativeRenderedGlyphs_ < pageGlyphs) {
+      drawNarrativeGlyph(narrativeRenderedGlyphs_,
+                         kNarrativeTextLuminance);
+      ++narrativeRenderedGlyphs_;
+    }
+    if (completedThisFrame) {
+      Serial.printf("Narrative page rendered complete: %u/%u glyphs=%u\n",
+                    narrativePageIndex_ + 1, narrativePageCount_,
+                    pageGlyphs);
+    }
+    return;
+  }
+
+  if (narrativePhase_ == NarrativePhase::FadingText) {
+    const float progress = smootherStep(
+        (nowMs - narrativePhaseStartedMs_) /
+        static_cast<float>(kNarrativeTextFadeMs));
+    const uint16_t eraseWidth = static_cast<uint16_t>(
+        lroundf(kNarrativeTextWidth * progress));
+    if (eraseWidth <= narrativeFadeErasedWidth_) return;
+
+    const uint8_t firstLine = narrativePageIndex_ * kNarrativeLinesPerPage;
+    const uint8_t lastLine = std::min<uint8_t>(
+        narrativeLineCount_, firstLine + kNarrativeLinesPerPage);
+    const uint8_t pageLineCount = lastLine - firstLine;
+    const int firstY = M5.Display.height() / 2 -
+                       static_cast<int>(pageLineCount - 1) *
+                           kNarrativeLineHeight / 2;
+    const int eraseX = kNarrativeTextLeft + narrativeFadeErasedWidth_;
+    const int eraseDelta = eraseWidth - narrativeFadeErasedWidth_;
+    for (uint8_t lineOffset = 0; lineOffset < pageLineCount; ++lineOffset) {
+      const int lineY = firstY + lineOffset * kNarrativeLineHeight;
+      M5.Display.fillRect(eraseX, lineY - 17, eraseDelta + 1, 35,
+                          kBackground);
+    }
+    narrativeFadeErasedWidth_ = eraseWidth;
+  }
 }
 
 void AvatarEngine::beginEnergyDismiss(uint32_t nowMs) {
@@ -1012,6 +1415,7 @@ void AvatarEngine::clearEnergyUi() {
   energyUiEnabled_ = false;
   energyCharging_ = false;
   energyMoodEnabled_ = true;
+  eyeMessageVertical_ = false;
   leftEyeMessage_ = "";
   rightEyeMessage_ = "";
   eyeMessageStartedMs_ = 0;
@@ -1080,7 +1484,7 @@ void AvatarEngine::drawEye(const EyePose& eye, float centerX, float centerY,
 
   const bool canRotate = fabsf(eye.angle) > 0.25f &&
                          eye.upperLid < 0.01f && eye.lowerLid < 0.01f &&
-                         eye.browOpacity < 0.01f && eye.roundness > 0.92f;
+                         eye.roundness > 0.92f;
   if (canRotate) {
     const float angle = eye.angle * kPi / 180.0f;
     const bool vertical = height >= width;
@@ -1145,13 +1549,9 @@ void AvatarEngine::drawEye(const EyePose& eye, float centerX, float centerY,
     if (eye.upperLidTilt > 0.0f) {
       M5.Display.fillTriangle(left, lidY, left + width, lidY,
                               left + width, lidY + upperTilt, kBackground);
-      M5.Display.drawLine(left, lidY, left + width, lidY + upperTilt,
-                          kEyeEdgeColor);
     } else {
       M5.Display.fillTriangle(left, lidY + upperTilt, left, lidY,
                               left + width, lidY, kBackground);
-      M5.Display.drawLine(left, lidY + upperTilt, left + width, lidY,
-                          kEyeEdgeColor);
     }
   }
 
@@ -1174,15 +1574,37 @@ void AvatarEngine::drawEye(const EyePose& eye, float centerX, float centerY,
         static_cast<uint8_t>(160.0f + 95.0f * browOpacity);
     const uint16_t browColor =
         M5.Display.color565(brightness, brightness, brightness);
-    M5.Display.drawWideLine(lroundf(eyeX - dx), lroundf(browCenterY - dy),
-                            lroundf(eyeX + dx), lroundf(browCenterY + dy),
-                            browRadius, browColor);
+    const float perpendicularX = -sinf(radians) * browRadius;
+    const float perpendicularY = cosf(radians) * browRadius;
+    const float startX = eyeX - dx;
+    const float startY = browCenterY - dy;
+    const float endX = eyeX + dx;
+    const float endY = browCenterY + dy;
+    const int16_t startLeftX = lroundf(startX + perpendicularX);
+    const int16_t startLeftY = lroundf(startY + perpendicularY);
+    const int16_t startRightX = lroundf(startX - perpendicularX);
+    const int16_t startRightY = lroundf(startY - perpendicularY);
+    const int16_t endLeftX = lroundf(endX + perpendicularX);
+    const int16_t endLeftY = lroundf(endY + perpendicularY);
+    const int16_t endRightX = lroundf(endX - perpendicularX);
+    const int16_t endRightY = lroundf(endY - perpendicularY);
+    M5.Display.fillTriangle(startLeftX, startLeftY, startRightX,
+                            startRightY, endLeftX, endLeftY, browColor);
+    M5.Display.fillTriangle(startRightX, startRightY, endRightX, endRightY,
+                            endLeftX, endLeftY, browColor);
+    const int browCapRadius =
+        std::max(2, static_cast<int>(lroundf(browRadius)));
+    M5.Display.fillCircle(lroundf(startX), lroundf(startY), browCapRadius,
+                          browColor);
+    M5.Display.fillCircle(lroundf(endX), lroundf(endY), browCapRadius,
+                          browColor);
   }
 }
 
 void AvatarEngine::drawEyeMessage(const EyePose& eye, float centerX,
                                   float centerY, float blink,
-                                  const String& text, float opacity) {
+                                  const String& text, float opacity,
+                                  bool vertical) {
   if (text.isEmpty() || opacity < 0.01f || blink < 0.38f) return;
 
   const float eyeX = centerX + eye.x;
@@ -1200,22 +1622,44 @@ void AvatarEngine::drawEyeMessage(const EyePose& eye, float centerX,
 
   const uint8_t coreLuminance = static_cast<uint8_t>(
       lroundf(255.0f * (1.0f - clamp01(opacity))));
-  const uint8_t edgeLuminance = static_cast<uint8_t>(
-      lroundf(255.0f * (1.0f - clamp01(opacity) * 0.46f)));
   const int textX = lroundf(eyeX);
   const int textY = (visibleTop + visibleBottom) / 2;
   M5.Display.setFont(&fonts::efontCN_24_b);
   M5.Display.setTextSize(1);
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextColor(
-      M5.Display.color565(edgeLuminance, edgeLuminance, edgeLuminance));
-  M5.Display.drawString(text, textX - 1, textY);
-  M5.Display.drawString(text, textX + 1, textY);
-  M5.Display.drawString(text, textX, textY - 1);
-  M5.Display.drawString(text, textX, textY + 1);
-  M5.Display.setTextColor(
       M5.Display.color565(coreLuminance, coreLuminance, coreLuminance));
-  M5.Display.drawString(text, textX, textY);
+  if (!vertical) {
+    M5.Display.drawString(text, textX, textY);
+  } else {
+    constexpr uint8_t kMaxVerticalGlyphs = 4;
+    constexpr int kVerticalGlyphAdvance = 28;
+    String glyphs[kMaxVerticalGlyphs];
+    uint8_t glyphCount = 0;
+    for (size_t byteIndex = 0;
+         byteIndex < text.length() && glyphCount < kMaxVerticalGlyphs;) {
+      const uint8_t lead = static_cast<uint8_t>(text[byteIndex]);
+      size_t glyphBytes = 1;
+      if ((lead & 0xE0) == 0xC0) {
+        glyphBytes = 2;
+      } else if ((lead & 0xF0) == 0xE0) {
+        glyphBytes = 3;
+      } else if ((lead & 0xF8) == 0xF0) {
+        glyphBytes = 4;
+      }
+      glyphBytes = std::min(glyphBytes, text.length() - byteIndex);
+      glyphs[glyphCount++] =
+          text.substring(byteIndex, byteIndex + glyphBytes);
+      byteIndex += glyphBytes;
+    }
+
+    const int firstY =
+        textY - static_cast<int>(glyphCount - 1) * kVerticalGlyphAdvance / 2;
+    for (uint8_t index = 0; index < glyphCount; ++index) {
+      M5.Display.drawString(glyphs[index], textX,
+                            firstY + index * kVerticalGlyphAdvance);
+    }
+  }
   M5.Display.setTextDatum(top_left);
 }
 
@@ -1304,6 +1748,7 @@ bool AvatarEngine::waitForVSync(uint32_t nowMs) {
 void AvatarEngine::render(uint32_t nowMs) {
   const uint32_t renderStartedUs = micros();
   updateInteraction(nowMs);
+  updateNarrativeText(nowMs);
   const int width = M5.Display.width();
   const int height = M5.Display.height();
   const float designScale = std::min(width, height) / kDesignSize;
@@ -1472,6 +1917,25 @@ void AvatarEngine::render(uint32_t nowMs) {
     }
   }
 
+  if (narrativeActive_ &&
+      (narrativePhase_ == NarrativePhase::ClosingEyes ||
+       narrativePhase_ == NarrativePhase::OpeningEyes)) {
+    const uint32_t elapsed = nowMs - narrativePhaseStartedMs_;
+    const bool closing = narrativePhase_ == NarrativePhase::ClosingEyes;
+    const float progress = smootherStep(
+        elapsed / static_cast<float>(closing ? kNarrativeEyeCloseMs
+                                             : kNarrativeEyeOpenMs));
+    constexpr float kNarrativeClosedScale = 0.035f;
+    const float eyeVisibility =
+        closing ? 1.0f - progress : progress;
+    const float narrativeBlink =
+        kNarrativeClosedScale +
+        (1.0f - kNarrativeClosedScale) * eyeVisibility;
+    blink = std::min(blink, narrativeBlink);
+    renderedPose.leftEye.browOpacity *= eyeVisibility;
+    renderedPose.rightEye.browOpacity *= eyeVisibility;
+  }
+
   float eyeMessageOpacity = 0.0f;
   float eyeMessageOffsetY = 0.0f;
   if (energyUiEnabled_ && eyeMessageStartedMs_ != 0 &&
@@ -1494,6 +1958,22 @@ void AvatarEngine::render(uint32_t nowMs) {
     eyeMessageOffsetY = (1.0f - enter) * 2.5f - (1.0f - exit) * 1.5f +
                         sinf(breathPhase) * kEyeMessageFloatPixels;
   }
+  const bool narrativeTextVisible =
+      narrativeActive_ &&
+      (narrativePhase_ == NarrativePhase::Typing ||
+       narrativePhase_ == NarrativePhase::Holding ||
+       narrativePhase_ == NarrativePhase::FadingText);
+  if (narrativeTextVisible) {
+    waitForVSync(nowMs);
+    M5.Display.startWrite();
+    drawNarrativePage(nowMs);
+    M5.Display.endWrite();
+    previousLeftBounds_.valid = false;
+    previousRightBounds_.valid = false;
+    recordRenderMetrics(nowMs, renderStartedUs, micros());
+    return;
+  }
+
   DirtyRect leftBounds =
       eyeBounds(renderedPose.leftEye, centerX, centerY, blink);
   DirtyRect rightBounds =
@@ -1510,11 +1990,11 @@ void AvatarEngine::render(uint32_t nowMs) {
   drawEye(renderedPose.leftEye, centerX, centerY, blink);
   drawEye(renderedPose.rightEye, centerX, centerY, blink);
   drawEyeMessage(renderedPose.leftEye, centerX, centerY + eyeMessageOffsetY,
-                 blink,
-                 leftEyeMessage_, eyeMessageOpacity);
+                  blink,
+                  leftEyeMessage_, eyeMessageOpacity, eyeMessageVertical_);
   drawEyeMessage(renderedPose.rightEye, centerX, centerY + eyeMessageOffsetY,
-                 blink,
-                 rightEyeMessage_, eyeMessageOpacity);
+                  blink,
+                  rightEyeMessage_, eyeMessageOpacity, eyeMessageVertical_);
   M5.Display.endWrite();
 
   previousLeftBounds_ = leftBounds;

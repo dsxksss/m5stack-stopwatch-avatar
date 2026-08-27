@@ -113,9 +113,15 @@ class AvatarEngine {
                      float motionLeadX = 0.0f, float motionLeadY = 0.0f);
   void setShakeTarget(float normalizedX, float normalizedY, float intensity);
   void setEnergyUi(float normalizedLevel, bool charging,
-                   bool affectMood = true);
+                    bool affectMood = true);
   void setEyeMessage(const String& leftText, const String& rightText,
-                     uint32_t nowMs, uint32_t holdMs);
+                     uint32_t nowMs, uint32_t holdMs,
+                     bool vertical = false);
+  bool showNarrativeText(const String& text, uint32_t nowMs,
+                         uint16_t glyphIntervalMs = 62);
+  void advanceNarrativeText(uint32_t nowMs);
+  void dismissNarrativeText(uint32_t nowMs);
+  void cancelNarrativeText();
   void beginEnergyDismiss(uint32_t nowMs);
   void clearEnergyUi();
   void invalidate();
@@ -124,8 +130,22 @@ class AvatarEngine {
   ExpressionId baseExpression() const { return baseExpression_; }
   const char* activeName() const;
   bool ready() const { return ready_; }
+  bool narrativeTextActive() const { return narrativeActive_; }
 
  private:
+  enum class NarrativePhase : uint8_t {
+    Inactive,
+    ClosingEyes,
+    Typing,
+    Holding,
+    FadingText,
+    OpeningEyes,
+  };
+
+  static constexpr uint16_t kNarrativeMaxGlyphs = 384;
+  static constexpr uint8_t kNarrativeMaxLines = 48;
+  static constexpr uint8_t kNarrativeLinesPerPage = 6;
+
   struct DirtyRect {
     DirtyRect() = default;
     DirtyRect(int16_t rectX, int16_t rectY, int16_t rectWidth,
@@ -161,7 +181,15 @@ class AvatarEngine {
   void render(uint32_t nowMs);
   void drawEye(const EyePose& eye, float centerX, float centerY, float blink);
   void drawEyeMessage(const EyePose& eye, float centerX, float centerY,
-                      float blink, const String& text, float opacity);
+                      float blink, const String& text, float opacity,
+                      bool vertical);
+  void layoutNarrativeText();
+  void updateNarrativeText(uint32_t nowMs);
+  void drawNarrativePage(uint32_t nowMs);
+  void drawNarrativePageIndicator();
+  void drawNarrativeGlyph(uint16_t pageGlyphIndex, uint8_t luminance);
+  uint16_t narrativePageGlyphCount(uint8_t page) const;
+  void beginNarrativeFade(uint32_t nowMs, bool dismissAfterFade);
   DirtyRect eyeBounds(const EyePose& eye, float centerX, float centerY,
                       float blink) const;
   void clearDirtyRect(const DirtyRect& rect);
@@ -195,12 +223,29 @@ class AvatarEngine {
   bool energyUiEnabled_ = false;
   bool energyCharging_ = false;
   bool energyMoodEnabled_ = true;
+  bool eyeMessageVertical_ = false;
   float energyLevel_ = 1.0f;
   String leftEyeMessage_;
   String rightEyeMessage_;
   uint32_t eyeMessageStartedMs_ = 0;
   uint32_t eyeMessageEndsAtMs_ = 0;
   uint32_t energyDismissStartedMs_ = 0;
+  bool narrativeActive_ = false;
+  bool narrativeDismissAfterFade_ = false;
+  NarrativePhase narrativePhase_ = NarrativePhase::Inactive;
+  String narrativeText_;
+  uint16_t narrativeGlyphOffsets_[kNarrativeMaxGlyphs + 1]{};
+  uint16_t narrativeLineStartGlyph_[kNarrativeMaxLines]{};
+  uint16_t narrativeLineEndGlyph_[kNarrativeMaxLines]{};
+  uint16_t narrativeGlyphCount_ = 0;
+  uint16_t narrativeGlyphIntervalMs_ = 62;
+  uint8_t narrativeLineCount_ = 0;
+  uint8_t narrativePageCount_ = 0;
+  uint8_t narrativePageIndex_ = 0;
+  bool narrativeCanvasPrepared_ = false;
+  uint16_t narrativeRenderedGlyphs_ = 0;
+  uint16_t narrativeFadeErasedWidth_ = 0;
+  uint32_t narrativePhaseStartedMs_ = 0;
   float touchTargetX_ = 0.0f;
   float touchTargetY_ = 0.0f;
   float tiltTargetX_ = 0.0f;

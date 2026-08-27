@@ -21,9 +21,9 @@ constexpr uint16_t kImuCalibrationSamples = 30;
 constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
-constexpr char kFirmwareVersion[] = "0.6.2";
+constexpr char kFirmwareVersion[] = "0.9.0";
 constexpr char kPreferencesNamespace[] = "kk-avatar";
-constexpr uint8_t kSettingsSchemaVersion = 5;
+constexpr uint8_t kSettingsSchemaVersion = 6;
 constexpr uint8_t kDefaultBrightness = 150;
 constexpr uint8_t kDefaultSoundVolume = 56;
 constexpr uint8_t kSoundVolumeLevels[] = {0, 32, 56, 84, 112};
@@ -32,9 +32,12 @@ constexpr uint32_t kDefaultDimAfterMs = 45UL * 1000UL;
 constexpr uint32_t kDefaultScreenOffAfterMs = 60UL * 1000UL;
 constexpr uint32_t kStatusMessageHoldMs = 3400;
 constexpr uint32_t kStatusDismissAnimationMs = 900;
+constexpr uint32_t kEyeMessageDismissAnimationMs = 900;
+constexpr uint32_t kBirthdayMessageHoldMs = 6000;
+constexpr uint32_t kBirthdayButtonSyncWindowMs = 180;
 constexpr uint32_t kWifiPairingHoldMs = 1800;
 constexpr uint32_t kEyeMenuClickWindowMs = 420;
-constexpr uint8_t kEyeMenuItemCount = 5;
+constexpr uint8_t kEyeMenuItemCount = 6;
 constexpr uint32_t kPowerSampleIntervalMs = 5000;
 constexpr uint32_t kRtcSampleIntervalMs = 30000;
 constexpr uint32_t kNetworkTimePollIntervalMs = 250;
@@ -51,13 +54,34 @@ constexpr float kMotionWakeJerkThreshold = 0.30f;
 constexpr uint8_t kMotionWakeRequiredSamples = 2;
 constexpr uint32_t kLowBatteryReminderIntervalMs = 15UL * 60UL * 1000UL;
 constexpr uint8_t kLowBatteryThreshold = 15;
+constexpr size_t kSerialCommandMaxBytes = 768;
+constexpr uint32_t kNarrativeDismissHoldMs = 1500;
 
 enum class GestureAxis : uint8_t { None, Horizontal, Vertical };
 enum class ScreenPowerState : uint8_t { Bright, Dimmed, Sleeping };
+enum class MotionSensitivity : uint8_t { Low, Medium, High };
+
+struct MotionSensitivityProfile {
+  const char* name;
+  const char* eyeLabel;
+  float tiltFullScaleG;
+  float gyroDivisor;
+  float shakeFloor;
+  float shakeRange;
+  float shakeDirectionDivisor;
+};
+
+constexpr MotionSensitivityProfile kMotionSensitivityProfiles[] = {
+    {"low", "低", 0.52f, 360.0f, 0.085f, 0.58f, 0.34f},
+    {"medium", "中", 0.38f, 280.0f, 0.055f, 0.48f, 0.28f},
+    {"high", "高", 0.28f, 220.0f, 0.035f, 0.36f, 0.22f},
+};
+
 enum class EyeMenuPage : uint8_t {
   Root,
   Brightness,
   Sound,
+  MotionSensitivity,
   QuietMute,
   Wifi,
   Version,
@@ -66,6 +90,7 @@ enum class EyeMenuPage : uint8_t {
 struct CompanionSettings {
   uint8_t brightness = kDefaultBrightness;
   uint8_t soundVolume = kDefaultSoundVolume;
+  MotionSensitivity motionSensitivity = MotionSensitivity::Medium;
   String wifiSsid;
   String wifiPassword;
   uint32_t dimAfterMs = kDefaultDimAfterMs;
@@ -73,6 +98,13 @@ struct CompanionSettings {
   uint8_t quietStartHour = 22;
   uint8_t quietEndHour = 7;
   bool quietMuteEnabled = false;
+};
+
+struct EyeMessage {
+  String left;
+  String right;
+  uint32_t holdMs = 3400;
+  bool vertical = false;
 };
 
 M5IOE1 ioe;
@@ -85,12 +117,18 @@ bool vibrationReady = false;
 bool diagnosticMode = false;
 bool diagnosticToggleLatched = false;
 bool statusMode = false;
+bool eyeMessageMode = false;
 bool wifiMode = false;
 bool eyeMenuMode = false;
 bool wifiPairingInputArmed = false;
 bool wifiPairingHoldLatched = false;
 bool eyeMenuInputArmed = false;
 bool eyeMenuWifiHoldLatched = false;
+bool birthdayADoubleClickPending = false;
+bool birthdayBDoubleClickPending = false;
+bool serialCommandOverflow = false;
+bool narrativeBPressTracking = false;
+bool narrativeBLongTriggered = false;
 bool rtcValid = false;
 bool networkTimeConnected = false;
 bool networkTimeAwaiting = false;
@@ -104,6 +142,11 @@ uint32_t lastImuInteractionMs = 0;
 uint32_t lastActivityMs = 0;
 uint32_t statusDismissesAtMs = 0;
 uint32_t statusReactionStartsAtMs = 0;
+uint32_t eyeMessageReactionStartsAtMs = 0;
+uint32_t eyeMessageDismissesAtMs = 0;
+uint32_t birthdayADoubleClickAtMs = 0;
+uint32_t birthdayBDoubleClickAtMs = 0;
+uint32_t narrativeBPressedAtMs = 0;
 uint32_t eyeMenuAClickDeadlineMs = 0;
 uint32_t eyeMenuPageReadyAtMs = 0;
 uint32_t lastPowerSampleMs = 0;
@@ -124,6 +167,7 @@ float previousAccelY = 0.0f;
 float previousAccelZ = 0.0f;
 float shakeEnergy = 0.0f;
 bool statusDismissing = false;
+bool eyeMessageDismissing = false;
 uint8_t eyeMenuAClickCount = 0;
 uint8_t eyeMenuIndex = 0;
 uint8_t motionWakeSampleCount = 0;
@@ -136,6 +180,7 @@ int16_t batteryVoltageMv = -1;
 m5::rtc_datetime_t rtcDateTime;
 ScreenPowerState screenPowerState = ScreenPowerState::Bright;
 ExpressionId statusReturnExpression = ExpressionId::Idle;
+ExpressionId eyeMessageReturnExpression = ExpressionId::Idle;
 ExpressionId wifiReturnExpression = ExpressionId::Idle;
 ExpressionId eyeMenuReturnExpression = ExpressionId::Idle;
 EyeMenuPage eyeMenuPage = EyeMenuPage::Root;
@@ -144,6 +189,7 @@ void setFont();
 void startVibration(uint8_t strength, uint16_t durationMs);
 void renderEyeMenu(uint32_t nowMs);
 void closeEyeMenu(uint32_t nowMs);
+void closeEyeMessage(uint32_t nowMs, bool restoreExpression = true);
 
 bool reached(uint32_t now, uint32_t deadline) {
   return deadline != 0 && static_cast<int32_t>(now - deadline) >= 0;
@@ -152,6 +198,15 @@ bool reached(uint32_t now, uint32_t deadline) {
 uint32_t clampTimeoutSeconds(int seconds, uint32_t fallbackMs) {
   if (seconds < 10 || seconds > 24 * 60 * 60) return fallbackMs;
   return static_cast<uint32_t>(seconds) * 1000UL;
+}
+
+uint8_t motionSensitivityIndex() {
+  return std::min<uint8_t>(static_cast<uint8_t>(settings.motionSensitivity),
+                           2);
+}
+
+const MotionSensitivityProfile& motionSensitivityProfile() {
+  return kMotionSensitivityProfiles[motionSensitivityIndex()];
 }
 
 void loadSettings() {
@@ -163,6 +218,8 @@ void loadSettings() {
       preferences.getUChar("brightness", kDefaultBrightness);
   settings.soundVolume =
       preferences.getUChar("sound_vol", kDefaultSoundVolume);
+  settings.motionSensitivity = static_cast<MotionSensitivity>(
+      std::min<uint8_t>(preferences.getUChar("motion_sens", 1), 2));
   settings.wifiSsid = preferences.getString("wifi_ssid", "");
   settings.wifiPassword = preferences.getString("wifi_pass", "");
   settings.dimAfterMs = clampTimeoutSeconds(
@@ -206,6 +263,10 @@ void saveSettings() {
   if (!preferences.isKey("sound_vol") ||
       preferences.getUChar("sound_vol") != settings.soundVolume) {
     preferences.putUChar("sound_vol", settings.soundVolume);
+  }
+  if (!preferences.isKey("motion_sens") ||
+      preferences.getUChar("motion_sens") != motionSensitivityIndex()) {
+    preferences.putUChar("motion_sens", motionSensitivityIndex());
   }
   if (!preferences.isKey("wifi_ssid") ||
       preferences.getString("wifi_ssid") != settings.wifiSsid) {
@@ -400,6 +461,8 @@ void noteActivity(uint32_t nowMs) {
 }
 
 void showStatus(uint32_t nowMs) {
+  if (avatar.narrativeTextActive()) avatar.cancelNarrativeText();
+  if (eyeMessageMode) closeEyeMessage(nowMs);
   noteActivity(nowMs);
   // A downward swipe switches the main loop into status mode before the
   // normal touch handler can observe finger-up. Release its drag target here
@@ -455,6 +518,130 @@ void hideStatus() {
   Serial.println("Immersive energy expression closed");
 }
 
+void closeEyeMessage(uint32_t nowMs, bool restoreExpression) {
+  if (!eyeMessageMode) return;
+  eyeMessageMode = false;
+  eyeMessageDismissing = false;
+  eyeMessageReactionStartsAtMs = 0;
+  eyeMessageDismissesAtMs = 0;
+  avatar.releaseTouch();
+  avatar.releaseSwipe();
+  gestureAxis = GestureAxis::None;
+  gestureCommitted = false;
+  avatar.clearEnergyUi();
+  if (restoreExpression) {
+    avatar.show(eyeMessageReturnExpression, nowMs, false, 240);
+  }
+  Serial.println("Eye message closed");
+}
+
+void beginEyeMessageDismiss(uint32_t nowMs) {
+  if (!eyeMessageMode || eyeMessageDismissing) return;
+  eyeMessageDismissing = true;
+  eyeMessageReactionStartsAtMs = 0;
+  eyeMessageDismissesAtMs = nowMs + kEyeMessageDismissAnimationMs;
+  avatar.beginEnergyDismiss(nowMs);
+  startVibration(75, 22);
+  playUiSound(UiSound::Close);
+  Serial.println("Eye message dismissing");
+}
+
+void showEyeMessage(const EyeMessage& message, uint32_t nowMs) {
+  noteActivity(nowMs);
+  avatar.releaseSwipe();
+  gestureAxis = GestureAxis::None;
+  gestureCommitted = false;
+  eyeMessageReturnExpression = avatar.baseExpression();
+  eyeMessageMode = true;
+  eyeMessageDismissing = false;
+  eyeMessageReactionStartsAtMs = nowMs + message.holdMs;
+  eyeMessageDismissesAtMs =
+      eyeMessageReactionStartsAtMs + kEyeMessageDismissAnimationMs;
+  avatar.setEnergyUi(1.0f, false, false);
+  avatar.setEyeMessage(message.left, message.right, nowMs,
+                       message.holdMs + 180, message.vertical);
+  avatar.play(ExpressionId::Listening, nowMs,
+              AvatarEngine::PlaybackMode::PingPong, false, 240);
+  startVibration(90, 26);
+  playUiSound(UiSound::Open);
+  Serial.println("Eye message shown");
+}
+
+void showBirthdayEasterEgg(uint32_t nowMs) {
+  EyeMessage message;
+  message.left = "生日快乐";
+  message.right = "小谷宝贝";
+  message.holdMs = kBirthdayMessageHoldMs;
+  message.vertical = true;
+  showEyeMessage(message, nowMs);
+  Serial.println("Birthday easter egg shown");
+}
+
+bool birthdayEasterEggAvailable() {
+  return !diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
+         !eyeMenuMode && !wifiPairing.portalActive() &&
+         !avatar.narrativeTextActive();
+}
+
+bool narrativeTextAvailable() {
+  return !diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
+         !eyeMenuMode && !wifiPairing.portalActive() &&
+         !avatar.narrativeTextActive();
+}
+
+bool showNarrativeTextMode(const String& text, uint32_t nowMs) {
+  if (!narrativeTextAvailable()) {
+    Serial.println("Narrative text unavailable while UI is busy");
+    return false;
+  }
+  noteActivity(nowMs);
+  if (!avatar.showNarrativeText(text, nowMs)) {
+    Serial.println("Narrative text is empty");
+    return false;
+  }
+  narrativeBPressTracking = false;
+  narrativeBLongTriggered = false;
+  narrativeBPressedAtMs = 0;
+  startVibration(80, 24);
+  playUiSound(UiSound::Open);
+  return true;
+}
+
+void updateBirthdayEasterEgg(uint32_t nowMs) {
+  if (!birthdayEasterEggAvailable()) {
+    birthdayADoubleClickPending = false;
+    birthdayBDoubleClickPending = false;
+    return;
+  }
+
+  if (M5.BtnA.wasDoubleClicked()) {
+    birthdayADoubleClickPending = true;
+    birthdayADoubleClickAtMs = nowMs;
+  }
+  if (M5.BtnB.wasDoubleClicked()) {
+    birthdayBDoubleClickPending = true;
+    birthdayBDoubleClickAtMs = nowMs;
+  }
+
+  if (birthdayADoubleClickPending && birthdayBDoubleClickPending &&
+      nowMs - birthdayADoubleClickAtMs <= kBirthdayButtonSyncWindowMs &&
+      nowMs - birthdayBDoubleClickAtMs <= kBirthdayButtonSyncWindowMs) {
+    birthdayADoubleClickPending = false;
+    birthdayBDoubleClickPending = false;
+    showBirthdayEasterEgg(nowMs);
+    return;
+  }
+
+  if (birthdayADoubleClickPending &&
+      nowMs - birthdayADoubleClickAtMs > kBirthdayButtonSyncWindowMs) {
+    birthdayADoubleClickPending = false;
+  }
+  if (birthdayBDoubleClickPending &&
+      nowMs - birthdayBDoubleClickAtMs > kBirthdayButtonSyncWindowMs) {
+    birthdayBDoubleClickPending = false;
+  }
+}
+
 void renderWifiFace(uint32_t nowMs) {
   if (!wifiMode) return;
   avatar.clearEnergyUi();
@@ -476,8 +663,8 @@ void renderWifiFace(uint32_t nowMs) {
       expression = ExpressionId::Thinking;
       break;
     case WifiPairing::State::Portal:
-      leftText = "KK";
-      rightText = wifiPairing.accessPointCode();
+      leftText = String(wifiPairing.accessPointPassword()).substring(0, 4);
+      rightText = String(wifiPairing.accessPointPassword()).substring(4);
       expression = ExpressionId::Curious;
       break;
     case WifiPairing::State::Connected:
@@ -499,6 +686,8 @@ void renderWifiFace(uint32_t nowMs) {
 }
 
 void enterWifiMode(uint32_t nowMs) {
+  if (avatar.narrativeTextActive()) avatar.cancelNarrativeText();
+  if (eyeMessageMode) closeEyeMessage(nowMs);
   noteActivity(nowMs);
   if (statusMode) hideStatus();
   if (!wifiMode) {
@@ -529,6 +718,10 @@ void leaveWifiMode(uint32_t nowMs) {
   avatar.invalidate();
   playUiSound(UiSound::Close);
   Serial.println("Wi-Fi expression mode closed");
+}
+
+void startWifiPairingPortal(uint32_t nowMs) {
+  wifiPairing.startPortal(nowMs);
 }
 
 void updateWifiPairing(uint32_t nowMs) {
@@ -640,7 +833,7 @@ void handleWifiInput(uint32_t nowMs) {
     wifiPairingHoldLatched = true;
     noteActivity(nowMs);
     if (!wifiPairing.portalActive()) {
-      wifiPairing.startPortal(nowMs);
+      startWifiPairingPortal(nowMs);
       wifiPairing.consumeStateChanged();
       renderWifiFace(nowMs);
       playUiSound(UiSound::Open);
@@ -699,6 +892,29 @@ void cycleSoundVolume(uint32_t nowMs, bool refreshStatus = true) {
                 nextIndex == 0 ? "muted" : String(nextIndex).c_str());
 }
 
+void setMotionSensitivity(MotionSensitivity sensitivity, uint32_t nowMs,
+                          bool refreshStatus = true) {
+  settings.motionSensitivity = sensitivity;
+  saveSettings();
+  shakeEnergy = 0.0f;
+  avatar.setShakeTarget(0.0f, 0.0f, 0.0f);
+  const uint8_t index = motionSensitivityIndex();
+  startVibration(85 + index * 15, 24 + index * 5);
+  if (refreshStatus) showStatus(nowMs);
+  playUiSound(UiSound::Brightness, index);
+  const MotionSensitivityProfile& profile = motionSensitivityProfile();
+  Serial.printf(
+      "Motion sensitivity saved: %s (tilt=%.2fg gyro=%.0f shake=%.3f/%.2f dir=%.2f)\n",
+      profile.name, profile.tiltFullScaleG, profile.gyroDivisor,
+      profile.shakeFloor, profile.shakeRange, profile.shakeDirectionDivisor);
+}
+
+void cycleMotionSensitivity(uint32_t nowMs, bool refreshStatus = true) {
+  const uint8_t nextIndex = (motionSensitivityIndex() + 1) % 3;
+  setMotionSensitivity(static_cast<MotionSensitivity>(nextIndex), nowMs,
+                       refreshStatus);
+}
+
 void toggleQuietMute(uint32_t nowMs) {
   settings.quietMuteEnabled = !settings.quietMuteEnabled;
   saveSettings();
@@ -717,10 +933,13 @@ void renderEyeMenu(uint32_t nowMs) {
   String leftText;
   String rightText;
   float eyeLevel = 1.0f;
-  ExpressionId expression = ExpressionId::Curious;
+  // Menu text should remain calm and readable. Curious uses asymmetric
+  // ping-pong keyframes that make one eye repeatedly grow and shrink.
+  ExpressionId expression = ExpressionId::Idle;
 
   if (eyeMenuPage == EyeMenuPage::Root) {
-    constexpr const char* labels[] = {"亮度", "音量", "夜静", "网络", "版本"};
+    constexpr const char* labels[] = {"亮度", "音量", "灵敏", "夜静", "网络",
+                                      "版本"};
     leftText = labels[eyeMenuIndex % kEyeMenuItemCount];
     rightText = String((eyeMenuIndex % kEyeMenuItemCount) + 1) + "/" +
                 String(kEyeMenuItemCount);
@@ -738,6 +957,12 @@ void renderEyeMenu(uint32_t nowMs) {
     leftText = level == 0 ? "静音" : "音量";
     rightText = String(level) + "/4";
     eyeLevel = level / 4.0f;
+    avatar.setEnergyUi(eyeLevel, false, false);
+  } else if (eyeMenuPage == EyeMenuPage::MotionSensitivity) {
+    const uint8_t level = motionSensitivityIndex();
+    leftText = "灵敏";
+    rightText = motionSensitivityProfile().eyeLabel;
+    eyeLevel = (level + 1) / 3.0f;
     avatar.setEnergyUi(eyeLevel, false, false);
   } else if (eyeMenuPage == EyeMenuPage::QuietMute) {
     leftText = "夜静";
@@ -757,8 +982,8 @@ void renderEyeMenu(uint32_t nowMs) {
         expression = ExpressionId::Thinking;
         break;
       case WifiPairing::State::Portal:
-        leftText = "KK";
-        rightText = wifiPairing.accessPointCode();
+        leftText = String(wifiPairing.accessPointPassword()).substring(0, 4);
+        rightText = String(wifiPairing.accessPointPassword()).substring(4);
         break;
       case WifiPairing::State::Connected:
         leftText = "网络";
@@ -787,6 +1012,8 @@ void renderEyeMenu(uint32_t nowMs) {
 }
 
 void openEyeMenu(uint32_t nowMs) {
+  if (avatar.narrativeTextActive()) avatar.cancelNarrativeText();
+  if (eyeMessageMode) closeEyeMessage(nowMs);
   noteActivity(nowMs);
   if (statusMode) hideStatus();
   if (wifiMode) leaveWifiMode(nowMs);
@@ -890,7 +1117,7 @@ void handleEyeMenuInput(uint32_t nowMs) {
       eyeMenuWifiHoldLatched = true;
       noteActivity(nowMs);
       if (!wifiPairing.portalActive()) {
-        wifiPairing.startPortal(nowMs);
+        startWifiPairingPortal(nowMs);
         wifiPairing.consumeStateChanged();
         startVibration(150, 42);
         playUiSound(UiSound::Open);
@@ -929,6 +1156,11 @@ void handleEyeMenuInput(uint32_t nowMs) {
   }
   if (eyeMenuPage == EyeMenuPage::Sound) {
     cycleSoundVolume(nowMs, false);
+    renderEyeMenu(nowMs);
+    return;
+  }
+  if (eyeMenuPage == EyeMenuPage::MotionSensitivity) {
+    cycleMotionSensitivity(nowMs, false);
     renderEyeMenu(nowMs);
     return;
   }
@@ -1080,7 +1312,8 @@ void updateCompanionSensors(uint32_t nowMs) {
     } else if (charging != previousCharging) {
       Serial.printf("Charging state changed: %s\n",
                     charging ? "connected" : "disconnected");
-      if (!diagnosticMode && !statusMode && !wifiMode && !eyeMenuMode &&
+      if (!diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
+          !eyeMenuMode && !avatar.narrativeTextActive() &&
           screenPowerState != ScreenPowerState::Sleeping) {
         trigger(charging ? ExpressionId::Excited : ExpressionId::Curious,
                 nowMs, 220);
@@ -1090,8 +1323,8 @@ void updateCompanionSensors(uint32_t nowMs) {
 
   const bool lowBattery = batteryLevel >= 0 &&
                           batteryLevel <= kLowBatteryThreshold && !charging;
-  if (lowBattery && !diagnosticMode && !statusMode && !wifiMode &&
-      !eyeMenuMode &&
+  if (lowBattery && !diagnosticMode && !statusMode && !eyeMessageMode &&
+      !wifiMode && !eyeMenuMode && !avatar.narrativeTextActive() &&
       screenPowerState != ScreenPowerState::Sleeping &&
       (lastLowBatteryReminderMs == 0 ||
        nowMs - lastLowBatteryReminderMs >= kLowBatteryReminderIntervalMs)) {
@@ -1107,7 +1340,10 @@ void updateDisplayPower(uint32_t nowMs) {
     lastActivityMs = nowMs;
     return;
   }
-  if (diagnosticMode || statusMode) return;
+  if (diagnosticMode || statusMode || eyeMessageMode ||
+      avatar.narrativeTextActive()) {
+    return;
+  }
   const uint32_t inactiveMs = nowMs - lastActivityMs;
 
   if (inactiveMs >= settings.screenOffAfterMs) {
@@ -1144,12 +1380,13 @@ void printCompanionStatus() {
   sampleRtc();
   Serial.printf(
       "Status: version=%s time=%s date=%s battery=%ld%% voltage=%dmV charging=%s "
-      "brightness=%u volume=%u dim=%lus off=%lus quiet=%s/%02u-%02u "
+      "brightness=%u volume=%u motion=%s dim=%lus off=%lus quiet=%s/%02u-%02u "
       "wifi=%s ip=%s\n",
       kFirmwareVersion, formattedTime().c_str(), formattedDate().c_str(),
       static_cast<long>(batteryLevel), batteryVoltageMv,
       chargeReadingValid ? (charging ? "yes" : "no") : "unknown",
       settings.brightness, settings.soundVolume,
+      motionSensitivityProfile().name,
       static_cast<unsigned long>(settings.dimAfterMs / 1000UL),
       static_cast<unsigned long>(settings.screenOffAfterMs / 1000UL),
       settings.quietMuteEnabled ? "on" : "off",
@@ -1191,11 +1428,31 @@ bool setRtcFromCommand(const String& command) {
 bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
   String command = rawCommand;
   command.trim();
+  String commandPrefix = command.substring(0, std::min<size_t>(4, command.length()));
+  commandPrefix.toLowerCase();
+  if (commandPrefix == "say ") {
+    String text = command.substring(4);
+    text.trim();
+    if (text.isEmpty()) {
+      Serial.println("Usage: say <UTF-8 text>");
+    } else {
+      showNarrativeTextMode(text, nowMs);
+    }
+    return true;
+  }
   command.toLowerCase();
 
   if (command == "status") {
     printCompanionStatus();
     showStatus(nowMs);
+    return true;
+  }
+  if (command == "birthday") {
+    if (birthdayEasterEggAvailable()) {
+      showBirthdayEasterEgg(nowMs);
+    } else {
+      Serial.println("Birthday easter egg unavailable while UI is busy");
+    }
     return true;
   }
   if (command == "sound" || command == "sound test") {
@@ -1205,6 +1462,28 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
                          : isQuietMuteActive()      ? "quiet hours"
                                                     : "played";
     Serial.printf("Sound test: %s\n", result);
+    return true;
+  }
+  if (command == "motion") {
+    const MotionSensitivityProfile& profile = motionSensitivityProfile();
+    Serial.printf(
+        "Motion sensitivity: %s (tilt=%.2fg gyro=%.0f shake=%.3f/%.2f dir=%.2f)\n",
+        profile.name, profile.tiltFullScaleG, profile.gyroDivisor,
+        profile.shakeFloor, profile.shakeRange,
+        profile.shakeDirectionDivisor);
+    return true;
+  }
+  if (command.startsWith("motion ")) {
+    const String level = command.substring(7);
+    if (level == "low") {
+      setMotionSensitivity(MotionSensitivity::Low, nowMs);
+    } else if (level == "medium") {
+      setMotionSensitivity(MotionSensitivity::Medium, nowMs);
+    } else if (level == "high") {
+      setMotionSensitivity(MotionSensitivity::High, nowMs);
+    } else {
+      Serial.println("Usage: motion low|medium|high");
+    }
     return true;
   }
   if (command == "time") {
@@ -1224,7 +1503,7 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
   if (command == "wifi pair") {
     enterWifiMode(nowMs);
     if (!wifiPairing.portalActive()) {
-      wifiPairing.startPortal(nowMs);
+      startWifiPairingPortal(nowMs);
       wifiPairing.consumeStateChanged();
       renderWifiFace(nowMs);
     }
@@ -1420,6 +1699,7 @@ void handleImuInteraction(uint32_t nowMs) {
   const float screenAccelZ = imu.accel.z;
   const float screenGyroX = imu.gyro.y;
   const float screenGyroY = imu.gyro.x;
+  const MotionSensitivityProfile& motion = motionSensitivityProfile();
   constexpr float kFilterAmount = 0.24f;
   if (imuCalibrationCount == 0) {
     filteredAccelX = screenAccelX;
@@ -1441,15 +1721,17 @@ void handleImuInteraction(uint32_t nowMs) {
                     neutralAccelX, neutralAccelY);
     }
   } else {
-    // Roughly 0.38 g of tilt reaches full gaze travel. Neutral adaptation is
-    // deliberately very slow so eyes keep looking in the chosen direction
-    // while the user holds the device at an angle. Gyroscope feed-forward
-    // makes the eyes lead during rotation; gravity keeps the final direction.
+    // The selected profile changes only input normalization. AvatarEngine still
+    // owns the fixed travel limits and safe eye ellipse. Neutral adaptation is
+    // deliberately very slow so eyes keep looking in the chosen direction.
     neutralAccelX += (filteredAccelX - neutralAccelX) * 0.00015f;
     neutralAccelY += (filteredAccelY - neutralAccelY) * 0.00015f;
-    avatar.setTiltTarget(-(filteredAccelX - neutralAccelX) / 0.38f,
-                         -(filteredAccelY - neutralAccelY) / 0.38f,
-                         -screenGyroY / 280.0f, screenGyroX / 280.0f);
+    avatar.setTiltTarget(-(filteredAccelX - neutralAccelX) /
+                             motion.tiltFullScaleG,
+                         -(filteredAccelY - neutralAccelY) /
+                             motion.tiltFullScaleG,
+                         -screenGyroY / motion.gyroDivisor,
+                         screenGyroX / motion.gyroDivisor);
   }
 
   const float deltaX = screenAccelX - previousAccelX;
@@ -1481,11 +1763,15 @@ void handleImuInteraction(uint32_t nowMs) {
   if (imuCalibrationCount < kImuCalibrationSamples) return;
 
   const float shakeIntensity = std::max(
-      0.0f, std::min(1.0f, (shakeEnergy - 0.055f) / 0.48f));
+      0.0f,
+      std::min(1.0f,
+               (shakeEnergy - motion.shakeFloor) / motion.shakeRange));
   const float shakeDirectionX =
-      std::max(-1.0f, std::min(1.0f, -deltaX / 0.28f));
+      std::max(-1.0f,
+               std::min(1.0f, -deltaX / motion.shakeDirectionDivisor));
   const float shakeDirectionY =
-      std::max(-1.0f, std::min(1.0f, -deltaY / 0.28f));
+      std::max(-1.0f,
+               std::min(1.0f, -deltaY / motion.shakeDirectionDivisor));
   avatar.setShakeTarget(shakeDirectionX, shakeDirectionY, shakeIntensity);
 }
 
@@ -1493,7 +1779,14 @@ void handleSerialCommands(uint32_t nowMs) {
   while (Serial.available() > 0) {
     const char character = static_cast<char>(Serial.read());
     if (character == '\n' || character == '\r') {
-      if (serialCommand.length() == 0) continue;
+      if (serialCommand.length() == 0 && !serialCommandOverflow) continue;
+      if (serialCommandOverflow) {
+        Serial.printf("Command too long; maximum is %u bytes\n",
+                      static_cast<unsigned>(kSerialCommandMaxBytes));
+        serialCommand = "";
+        serialCommandOverflow = false;
+        continue;
+      }
       if (handleCompanionCommand(serialCommand, nowMs)) {
         // Companion commands report their own result.
       } else if (avatar.showFromCommand(serialCommand, nowMs)) {
@@ -1505,8 +1798,10 @@ void handleSerialCommands(uint32_t nowMs) {
         Serial.printf("Unknown command: %s\n", serialCommand.c_str());
       }
       serialCommand = "";
-    } else if (serialCommand.length() < 32) {
+    } else if (serialCommand.length() < kSerialCommandMaxBytes) {
       serialCommand += character;
+    } else {
+      serialCommandOverflow = true;
     }
   }
 }
@@ -1535,6 +1830,8 @@ void refreshDiagnosticSensors() {
 }
 
 void setDiagnosticMode(bool enabled) {
+  if (avatar.narrativeTextActive()) avatar.cancelNarrativeText();
+  if (eyeMessageMode) closeEyeMessage(millis());
   if (statusMode) hideStatus();
   if (wifiMode) leaveWifiMode(millis());
   if (eyeMenuMode) closeEyeMenu(millis());
@@ -1617,6 +1914,107 @@ void handleStatusInput(uint32_t nowMs) {
   }
 }
 
+void handleEyeMessageInput(uint32_t nowMs) {
+  if (!eyeMessageDismissing &&
+      reached(nowMs, eyeMessageReactionStartsAtMs)) {
+    beginEyeMessageDismiss(nowMs);
+  }
+  if (reached(nowMs, eyeMessageDismissesAtMs)) {
+    closeEyeMessage(nowMs);
+    return;
+  }
+
+  if (M5.BtnA.wasHold() && !M5.BtnB.isPressed()) {
+    closeEyeMessage(nowMs);
+    openEyeMenu(nowMs);
+    return;
+  }
+  if (M5.BtnB.wasClicked()) {
+    noteActivity(nowMs);
+    beginEyeMessageDismiss(nowMs);
+    return;
+  }
+
+  const auto touch = M5.Touch.getDetail(0);
+  if (touch.wasPressed()) {
+    noteActivity(nowMs);
+    gestureAxis = GestureAxis::None;
+    gestureCommitted = false;
+  }
+
+  if (touch.isPressed()) {
+    const bool moving = touch.isFlicking() || touch.isDragging();
+    const int deltaX = moving ? touch.distanceX() : 0;
+    const int deltaY = moving ? touch.distanceY() : 0;
+    if (gestureAxis == GestureAxis::None &&
+        std::max(abs(deltaX), abs(deltaY)) >= kGestureDirectionLockPx) {
+      gestureAxis = abs(deltaX) >= abs(deltaY) ? GestureAxis::Horizontal
+                                               : GestureAxis::Vertical;
+    }
+    if (gestureAxis == GestureAxis::Vertical) {
+      avatar.releaseTouch();
+      avatar.setSwipeOffset(0.0f, deltaY, 0);
+      if (!gestureCommitted && deltaY >= kGestureCommitPx) {
+        gestureCommitted = true;
+        showStatus(nowMs);
+        return;
+      }
+    } else if (!eyeMessageDismissing) {
+      avatar.setTouchTarget(touch.x, touch.y);
+    }
+  }
+
+  if (touch.wasReleased()) {
+    avatar.releaseTouch();
+    avatar.releaseSwipe();
+    gestureAxis = GestureAxis::None;
+    gestureCommitted = false;
+  }
+}
+
+void handleNarrativeTextInput(uint32_t nowMs) {
+  if (!avatar.narrativeTextActive()) return;
+  const auto touch = M5.Touch.getDetail(0);
+
+  if (M5.BtnB.wasPressed()) {
+    narrativeBPressTracking = true;
+    narrativeBLongTriggered = false;
+    narrativeBPressedAtMs = nowMs;
+    noteActivity(nowMs);
+  }
+  if (narrativeBPressTracking && !narrativeBLongTriggered &&
+      M5.BtnB.isPressed() &&
+      nowMs - narrativeBPressedAtMs >= kNarrativeDismissHoldMs) {
+    narrativeBLongTriggered = true;
+    noteActivity(nowMs);
+    avatar.dismissNarrativeText(nowMs);
+    startVibration(75, 24);
+    playUiSound(UiSound::Close);
+    Serial.printf("Narrative input: B held %lu ms, dismissing\n",
+                  static_cast<unsigned long>(nowMs - narrativeBPressedAtMs));
+    return;
+  }
+
+  const bool bReleased = M5.BtnB.wasReleased();
+  const bool bShortPress = bReleased && narrativeBPressTracking &&
+                           !narrativeBLongTriggered;
+  if (bReleased) {
+    narrativeBPressTracking = false;
+    narrativeBLongTriggered = false;
+    narrativeBPressedAtMs = 0;
+  }
+
+  if (M5.BtnA.wasClicked() || bShortPress || touch.wasClicked()) {
+    noteActivity(nowMs);
+    avatar.advanceNarrativeText(nowMs);
+    startVibration(45, 16);
+    playUiSound(UiSound::Next);
+    Serial.printf("Narrative input: %s, advancing\n",
+                  bShortPress ? "B short press" :
+                  (M5.BtnA.wasClicked() ? "A short press" : "display tap"));
+  }
+}
+
 }  // namespace
 
 void setup() {
@@ -1625,6 +2023,7 @@ void setup() {
   config.internal_spk = true;
   M5.begin(config);
   Serial.begin(115200);
+  serialCommand.reserve(kSerialCommandMaxBytes);
   loadSettings();
   const bool soundReady = uiSounds.begin(settings.soundVolume);
 
@@ -1657,9 +2056,11 @@ void setup() {
   Serial.println(
       "Hold A: eye menu; swipe down: battery; Wi-Fi page hold A: pair/change network; B: back");
   Serial.println("Sound test: sound");
+  Serial.println("Full-screen typewriter: say <UTF-8 text>");
   Serial.println(
       "Companion commands: status, time [YYYY-MM-DD HH:MM:SS], "
-      "brightness 20-255, volume 0-160, dim seconds, screenoff seconds, quiet start end, "
+      "brightness 20-255, volume 0-160, motion [low|medium|high], dim seconds, "
+      "screenoff seconds, quiet start end, "
       "wifi [pair|retry|forget], screen on|off");
 
   lastActivityMs = millis();
@@ -1682,6 +2083,7 @@ void loop() {
   }
 
   handleDiagnosticToggle();
+  updateBirthdayEasterEgg(nowMs);
   updateWifiPairing(nowMs);
   updateNetworkTime(nowMs);
   updateCompanionSensors(nowMs);
@@ -1689,11 +2091,22 @@ void loop() {
 
   if (diagnosticMode) {
     handleDiagnosticInput(nowMs);
+  } else if (avatar.narrativeTextActive()) {
+    handleNarrativeTextInput(nowMs);
+    const bool wasActive = avatar.narrativeTextActive();
+    avatar.update(nowMs);
+    if (wasActive && !avatar.narrativeTextActive()) {
+      startVibration(55, 18);
+      playUiSound(UiSound::Close);
+    }
   } else if (statusMode) {
     handleStatusInput(nowMs);
     if (statusMode) {
       avatar.update(nowMs);
     }
+  } else if (eyeMessageMode) {
+    handleEyeMessageInput(nowMs);
+    if (eyeMessageMode) avatar.update(nowMs);
   } else if (wifiMode) {
     handleWifiInput(nowMs);
     if (wifiMode) avatar.update(nowMs);

@@ -1036,7 +1036,8 @@ void AvatarEngine::setEyeMessage(const String& leftText,
 
 bool AvatarEngine::showNarrativeText(const String& text, uint32_t nowMs,
                                      uint16_t glyphIntervalMs,
-                                     bool skipEyeClose) {
+                                     bool skipEyeClose,
+                                     uint16_t initialPage) {
   narrativeText_ = text;
   narrativeText_.trim();
   narrativeText_.replace("\r\n", "\n");
@@ -1053,9 +1054,11 @@ bool AvatarEngine::showNarrativeText(const String& text, uint32_t nowMs,
   narrativeActive_ = true;
   narrativeDismissAfterFade_ = false;
   narrativeAdvanceToBlack_ = false;
+  narrativePageStep_ = 1;
   narrativePhase_ = skipEyeClose ? NarrativePhase::Typing
                                  : NarrativePhase::ClosingEyes;
-  narrativePageIndex_ = 0;
+  narrativePageIndex_ =
+      std::min<uint16_t>(initialPage, narrativePageCount_ - 1);
   narrativeCanvasPrepared_ = false;
   narrativeRenderedGlyphs_ = 0;
   narrativeFadeErasedWidth_ = 0;
@@ -1064,9 +1067,9 @@ bool AvatarEngine::showNarrativeText(const String& text, uint32_t nowMs,
   requiresFullClear_ = true;
   previousLeftBounds_.valid = false;
   previousRightBounds_.valid = false;
-  Serial.printf("Narrative text started: glyphs=%u lines=%u pages=%u\n",
-                narrativeGlyphCount_, narrativeLineCount_,
-                narrativePageCount_);
+  Serial.printf("Narrative text started: glyphs=%u lines=%u pages=%u start=%u\n",
+                 narrativeGlyphCount_, narrativeLineCount_,
+                 narrativePageCount_, narrativePageIndex_ + 1);
   return true;
 }
 
@@ -1168,6 +1171,7 @@ void AvatarEngine::advanceNarrativeText(uint32_t nowMs) {
                     narrativePageIndex_ + 1, narrativePageCount_);
       break;
     case NarrativePhase::Holding:
+      narrativePageStep_ = 1;
       beginNarrativeFade(nowMs, false);
       Serial.printf("Narrative advance: page %u/%u turning\n",
                     narrativePageIndex_ + 1, narrativePageCount_);
@@ -1186,11 +1190,51 @@ void AvatarEngine::advanceNarrativeText(uint32_t nowMs) {
   forceRender_ = true;
 }
 
-void AvatarEngine::advanceNarrativeTextToBlack(uint32_t nowMs) {
-  if (!narrativeHoldingLastPage()) return;
+void AvatarEngine::retreatNarrativeText(uint32_t nowMs) {
+  if (!narrativeActive_ || narrativePageIndex_ == 0) return;
+  narrativePageStep_ = -1;
+  switch (narrativePhase_) {
+    case NarrativePhase::ClosingEyes:
+      --narrativePageIndex_;
+      narrativePhase_ = NarrativePhase::Typing;
+      narrativePhaseStartedMs_ = nowMs;
+      narrativeCanvasPrepared_ = false;
+      narrativeRenderedGlyphs_ = 0;
+      narrativeFadeErasedWidth_ = 0;
+      requiresFullClear_ = true;
+      break;
+    case NarrativePhase::Typing:
+    case NarrativePhase::Holding:
+      beginNarrativeFade(nowMs, false);
+      break;
+    case NarrativePhase::FadingText:
+      narrativePhaseStartedMs_ = nowMs - kNarrativeTextFadeMs;
+      break;
+    case NarrativePhase::AwaitingNext:
+      break;
+    case NarrativePhase::OpeningEyes:
+      cancelNarrativeText();
+      break;
+    case NarrativePhase::Inactive:
+      break;
+  }
+  Serial.printf("Narrative retreat: page %u/%u turning back\n",
+                narrativePageIndex_ + 1, narrativePageCount_);
+  forceRender_ = true;
+}
+
+void AvatarEngine::advanceNarrativeTextToBlack(uint32_t nowMs,
+                                               bool retreat) {
+  if (!narrativeActive_ || narrativePhase_ == NarrativePhase::ClosingEyes ||
+      narrativePhase_ == NarrativePhase::AwaitingNext ||
+      narrativePhase_ == NarrativePhase::OpeningEyes ||
+      narrativePhase_ == NarrativePhase::Inactive) {
+    return;
+  }
+  narrativePageStep_ = retreat ? -1 : 1;
   narrativeAdvanceToBlack_ = true;
   beginNarrativeFade(nowMs, true);
-  Serial.printf("Narrative final page %u/%u fading to next block\n",
+  Serial.printf("Narrative page %u/%u fading to adjacent block\n",
                 narrativePageIndex_ + 1, narrativePageCount_);
 }
 
@@ -1223,6 +1267,7 @@ void AvatarEngine::cancelNarrativeText() {
   narrativeActive_ = false;
   narrativeDismissAfterFade_ = false;
   narrativeAdvanceToBlack_ = false;
+  narrativePageStep_ = 1;
   narrativePhase_ = NarrativePhase::Inactive;
   narrativeText_ = "";
   narrativeGlyphCount_ = 0;
@@ -1415,10 +1460,12 @@ void AvatarEngine::drawModeMenu(uint32_t nowMs) {
   M5.Display.drawString(modeMenuStatus_, centerX, 316);
   M5.Display.setTextColor(dimColor, kBackground);
   M5.Display.drawString(modeMenuDetail_, centerX, 347);
-  M5.Display.drawString(modeMenuStatus_ == "等待长文"
-                            ? "等待投送   B 返回"
-                            : "A 进入   B 返回",
-                        centerX, 397);
+  const String footer =
+      modeMenuDetail_.startsWith("A下 B上")
+          ? "短按切章 · 长按 B 返回"
+          : (modeMenuStatus_ == "等待长文" ? "等待投送   B 返回"
+                                             : "A 进入   B 返回");
+  M5.Display.drawString(footer, centerX, 397);
   M5.Display.setTextDatum(top_left);
 }
 
@@ -1450,10 +1497,15 @@ void AvatarEngine::updateNarrativeText(uint32_t nowMs) {
     case NarrativePhase::FadingText:
       if (elapsed >= kNarrativeTextFadeMs) {
         if (!narrativeDismissAfterFade_) {
-          narrativePageIndex_ =
-              narrativePageIndex_ + 1 < narrativePageCount_
-                  ? narrativePageIndex_ + 1
-                  : 0;
+          if (narrativePageStep_ < 0) {
+            if (narrativePageIndex_ > 0) --narrativePageIndex_;
+          } else {
+            narrativePageIndex_ =
+                narrativePageIndex_ + 1 < narrativePageCount_
+                    ? narrativePageIndex_ + 1
+                    : 0;
+          }
+          narrativePageStep_ = 1;
           narrativePhase_ = NarrativePhase::Typing;
           narrativePhaseStartedMs_ = nowMs;
           narrativeCanvasPrepared_ = false;
@@ -1608,8 +1660,11 @@ void AvatarEngine::drawNarrativePage(uint32_t nowMs) {
     const int firstY = M5.Display.height() / 2 -
                        static_cast<int>(pageLineCount - 1) *
                            kNarrativeLineHeight / 2;
-    const int eraseX = kNarrativeTextLeft + narrativeFadeErasedWidth_;
     const int eraseDelta = eraseWidth - narrativeFadeErasedWidth_;
+    const int eraseX =
+        narrativePageStep_ < 0
+            ? kNarrativeTextLeft + kNarrativeTextWidth - eraseWidth
+            : kNarrativeTextLeft + narrativeFadeErasedWidth_;
     for (uint16_t lineOffset = 0; lineOffset < pageLineCount; ++lineOffset) {
       const int lineY = firstY + lineOffset * kNarrativeLineHeight;
       M5.Display.fillRect(eraseX, lineY - 17, eraseDelta + 1, 35,

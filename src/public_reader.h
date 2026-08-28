@@ -19,6 +19,7 @@ class PublicReader {
   ~PublicReader();
 
   bool fetchDocument(const String& sourceUrl, String& error);
+  bool loadDocument(const String& manifest, String& error);
   bool downloadImage(uint8_t blockIndex, String& error);
   void clear();
   void releaseImage();

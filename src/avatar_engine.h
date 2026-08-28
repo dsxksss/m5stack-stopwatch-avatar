@@ -119,9 +119,11 @@ class AvatarEngine {
                      bool vertical = false);
   bool showNarrativeText(const String& text, uint32_t nowMs,
                          uint16_t glyphIntervalMs = 62,
-                         bool skipEyeClose = false);
+                         bool skipEyeClose = false,
+                         uint16_t initialPage = 0);
   void advanceNarrativeText(uint32_t nowMs);
-  void advanceNarrativeTextToBlack(uint32_t nowMs);
+  void retreatNarrativeText(uint32_t nowMs);
+  void advanceNarrativeTextToBlack(uint32_t nowMs, bool retreat = false);
   void dismissNarrativeText(uint32_t nowMs);
   void cancelNarrativeText();
   void showModeMenu(const String& title, const String& item,
@@ -143,6 +145,8 @@ class AvatarEngine {
   bool narrativeTextActive() const { return narrativeActive_; }
   bool narrativeHoldingLastPage() const;
   bool narrativeReadyForNextBlock() const;
+  uint16_t narrativePageIndex() const { return narrativePageIndex_; }
+  uint16_t narrativePageCount() const { return narrativePageCount_; }
   bool modeMenuActive() const { return modeMenuActive_; }
   bool modeMenuReady() const;
 
@@ -259,6 +263,7 @@ class AvatarEngine {
   bool narrativeActive_ = false;
   bool narrativeDismissAfterFade_ = false;
   bool narrativeAdvanceToBlack_ = false;
+  int8_t narrativePageStep_ = 1;
   NarrativePhase narrativePhase_ = NarrativePhase::Inactive;
   String narrativeText_;
   uint16_t narrativeGlyphOffsets_[kNarrativeMaxGlyphs + 1]{};

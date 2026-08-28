@@ -111,7 +111,7 @@ bool PublicReader::fetchBytes(const String& initialUrl, size_t maxBytes,
   http.setTimeout(12000);
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setRedirectLimit(3);
-  http.setUserAgent("KK-Avatar/0.11.0");
+  http.setUserAgent("KK-Avatar/0.12.1");
   if (!http.begin(secureClient, initialUrl)) {
     error = "无法打开 HTTPS 地址";
     return false;
@@ -180,11 +180,21 @@ bool PublicReader::fetchDocument(const String& sourceUrl, String& error) {
   manifest.reserve(length + 1);
   manifest.concat(reinterpret_cast<const char*>(bytes), length);
   free(bytes);
+  if (!loadDocument(manifest, error)) return false;
+  Serial.printf("Public reading manifest ready: blocks=%u\n", blockCount_);
+  return true;
+}
+
+bool PublicReader::loadDocument(const String& manifest, String& error) {
+  clear();
+  if (manifest.isEmpty() || manifest.length() > kMaxManifestBytes) {
+    error = manifest.isEmpty() ? "阅读清单为空" : "阅读清单超过大小限制";
+    return false;
+  }
   if (!parseManifest(manifest, error)) {
     clear();
     return false;
   }
-  Serial.printf("Public reading manifest ready: blocks=%u\n", blockCount_);
   return true;
 }
 

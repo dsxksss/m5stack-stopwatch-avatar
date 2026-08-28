@@ -118,10 +118,18 @@ class AvatarEngine {
                      uint32_t nowMs, uint32_t holdMs,
                      bool vertical = false);
   bool showNarrativeText(const String& text, uint32_t nowMs,
-                         uint16_t glyphIntervalMs = 62);
+                         uint16_t glyphIntervalMs = 62,
+                         bool skipEyeClose = false);
   void advanceNarrativeText(uint32_t nowMs);
   void dismissNarrativeText(uint32_t nowMs);
   void cancelNarrativeText();
+  void showModeMenu(const String& title, const String& item,
+                    const String& status, const String& detail,
+                    uint32_t nowMs);
+  void setModeMenuContent(const String& item, const String& status,
+                          const String& detail);
+  void dismissModeMenu(uint32_t nowMs);
+  void cancelModeMenu();
   void beginEnergyDismiss(uint32_t nowMs);
   void clearEnergyUi();
   void invalidate();
@@ -131,6 +139,8 @@ class AvatarEngine {
   const char* activeName() const;
   bool ready() const { return ready_; }
   bool narrativeTextActive() const { return narrativeActive_; }
+  bool modeMenuActive() const { return modeMenuActive_; }
+  bool modeMenuReady() const;
 
  private:
   enum class NarrativePhase : uint8_t {
@@ -142,8 +152,17 @@ class AvatarEngine {
     OpeningEyes,
   };
 
-  static constexpr uint16_t kNarrativeMaxGlyphs = 384;
-  static constexpr uint8_t kNarrativeMaxLines = 48;
+  enum class ModeMenuPhase : uint8_t {
+    Inactive,
+    ClosingEyes,
+    FadingIn,
+    Visible,
+    FadingOut,
+    OpeningEyes,
+  };
+
+  static constexpr uint16_t kNarrativeMaxGlyphs = 2048;
+  static constexpr uint16_t kNarrativeMaxLines = 256;
   static constexpr uint8_t kNarrativeLinesPerPage = 6;
 
   struct DirtyRect {
@@ -188,8 +207,10 @@ class AvatarEngine {
   void drawNarrativePage(uint32_t nowMs);
   void drawNarrativePageIndicator();
   void drawNarrativeGlyph(uint16_t pageGlyphIndex, uint8_t luminance);
-  uint16_t narrativePageGlyphCount(uint8_t page) const;
+  uint16_t narrativePageGlyphCount(uint16_t page) const;
   void beginNarrativeFade(uint32_t nowMs, bool dismissAfterFade);
+  void updateModeMenu(uint32_t nowMs);
+  void drawModeMenu(uint32_t nowMs);
   DirtyRect eyeBounds(const EyePose& eye, float centerX, float centerY,
                       float blink) const;
   void clearDirtyRect(const DirtyRect& rect);
@@ -239,13 +260,21 @@ class AvatarEngine {
   uint16_t narrativeLineEndGlyph_[kNarrativeMaxLines]{};
   uint16_t narrativeGlyphCount_ = 0;
   uint16_t narrativeGlyphIntervalMs_ = 62;
-  uint8_t narrativeLineCount_ = 0;
-  uint8_t narrativePageCount_ = 0;
-  uint8_t narrativePageIndex_ = 0;
+  uint16_t narrativeLineCount_ = 0;
+  uint16_t narrativePageCount_ = 0;
+  uint16_t narrativePageIndex_ = 0;
   bool narrativeCanvasPrepared_ = false;
   uint16_t narrativeRenderedGlyphs_ = 0;
   uint16_t narrativeFadeErasedWidth_ = 0;
   uint32_t narrativePhaseStartedMs_ = 0;
+  bool modeMenuActive_ = false;
+  bool modeMenuCanvasPrepared_ = false;
+  ModeMenuPhase modeMenuPhase_ = ModeMenuPhase::Inactive;
+  String modeMenuTitle_;
+  String modeMenuItem_;
+  String modeMenuStatus_;
+  String modeMenuDetail_;
+  uint32_t modeMenuPhaseStartedMs_ = 0;
   float touchTargetX_ = 0.0f;
   float touchTargetY_ = 0.0f;
   float tiltTargetX_ = 0.0f;

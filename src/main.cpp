@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "avatar_engine.h"
+#include "reading_service.h"
 #include "ui_sound.h"
 #include "wifi_pairing.h"
 
@@ -21,7 +22,7 @@ constexpr uint16_t kImuCalibrationSamples = 30;
 constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
-constexpr char kFirmwareVersion[] = "0.9.0";
+constexpr char kFirmwareVersion[] = "0.10.0";
 constexpr char kPreferencesNamespace[] = "kk-avatar";
 constexpr uint8_t kSettingsSchemaVersion = 6;
 constexpr uint8_t kDefaultBrightness = 150;
@@ -109,6 +110,7 @@ struct EyeMessage {
 
 M5IOE1 ioe;
 AvatarEngine avatar;
+ReadingService readingService;
 UiSoundEngine uiSounds;
 WifiPairing wifiPairing;
 Preferences preferences;
@@ -120,6 +122,9 @@ bool statusMode = false;
 bool eyeMessageMode = false;
 bool wifiMode = false;
 bool eyeMenuMode = false;
+bool modeMenuMode = false;
+bool modeMenuInputArmed = false;
+bool readingModeWaiting = false;
 bool wifiPairingInputArmed = false;
 bool wifiPairingHoldLatched = false;
 bool eyeMenuInputArmed = false;
@@ -173,6 +178,7 @@ uint8_t eyeMenuIndex = 0;
 uint8_t motionWakeSampleCount = 0;
 String lastDiagnosticEvent = "Waiting for input";
 String serialCommand;
+String queuedReadingText;
 GestureAxis gestureAxis = GestureAxis::None;
 bool gestureCommitted = false;
 int32_t batteryLevel = -1;
@@ -190,6 +196,7 @@ void startVibration(uint8_t strength, uint16_t durationMs);
 void renderEyeMenu(uint32_t nowMs);
 void closeEyeMenu(uint32_t nowMs);
 void closeEyeMessage(uint32_t nowMs, bool restoreExpression = true);
+void cancelModeMenuImmediate();
 
 bool reached(uint32_t now, uint32_t deadline) {
   return deadline != 0 && static_cast<int32_t>(now - deadline) >= 0;
@@ -461,6 +468,7 @@ void noteActivity(uint32_t nowMs) {
 }
 
 void showStatus(uint32_t nowMs) {
+  if (modeMenuMode || avatar.modeMenuActive()) cancelModeMenuImmediate();
   if (avatar.narrativeTextActive()) avatar.cancelNarrativeText();
   if (eyeMessageMode) closeEyeMessage(nowMs);
   noteActivity(nowMs);
@@ -579,23 +587,22 @@ void showBirthdayEasterEgg(uint32_t nowMs) {
 
 bool birthdayEasterEggAvailable() {
   return !diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
-         !eyeMenuMode && !wifiPairing.portalActive() &&
+         !eyeMenuMode && !modeMenuMode && !avatar.modeMenuActive() &&
+         !wifiPairing.portalActive() &&
          !avatar.narrativeTextActive();
 }
 
 bool narrativeTextAvailable() {
   return !diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
-         !eyeMenuMode && !wifiPairing.portalActive() &&
+         !eyeMenuMode && !modeMenuMode && !avatar.modeMenuActive() &&
+         !wifiPairing.portalActive() &&
          !avatar.narrativeTextActive();
 }
 
-bool showNarrativeTextMode(const String& text, uint32_t nowMs) {
-  if (!narrativeTextAvailable()) {
-    Serial.println("Narrative text unavailable while UI is busy");
-    return false;
-  }
+bool beginNarrativeText(const String& text, uint32_t nowMs,
+                        bool skipEyeClose) {
   noteActivity(nowMs);
-  if (!avatar.showNarrativeText(text, nowMs)) {
+  if (!avatar.showNarrativeText(text, nowMs, 62, skipEyeClose)) {
     Serial.println("Narrative text is empty");
     return false;
   }
@@ -605,6 +612,134 @@ bool showNarrativeTextMode(const String& text, uint32_t nowMs) {
   startVibration(80, 24);
   playUiSound(UiSound::Open);
   return true;
+}
+
+bool showNarrativeTextMode(const String& text, uint32_t nowMs) {
+  if (!narrativeTextAvailable()) {
+    Serial.println("Narrative text unavailable while UI is busy");
+    return false;
+  }
+  return beginNarrativeText(text, nowMs, false);
+}
+
+String readingModeAddress() {
+  if (!readingService.active()) return "请先连接 Wi-Fi";
+  return wifiPairing.localIp() + "/read";
+}
+
+void refreshModeMenuContent() {
+  if (!modeMenuMode || !avatar.modeMenuActive()) return;
+  if (readingModeWaiting) {
+    avatar.setModeMenuContent("阅读模式", "等待长文", readingModeAddress());
+    return;
+  }
+  if (!queuedReadingText.isEmpty()) {
+    avatar.setModeMenuContent("阅读模式", "已有长文", "按 A 开始阅读");
+  } else if (readingService.active()) {
+    avatar.setModeMenuContent("阅读模式", "联网可用",
+                              wifiPairing.localIp() + "/read");
+  } else {
+    avatar.setModeMenuContent("阅读模式", "网络未连接",
+                              "请先在设置中连接 Wi-Fi");
+  }
+}
+
+void openModeMenu(uint32_t nowMs) {
+  noteActivity(nowMs);
+  modeMenuMode = true;
+  modeMenuInputArmed = false;
+  readingModeWaiting = false;
+  const String status = !queuedReadingText.isEmpty()
+                            ? "已有长文"
+                            : (readingService.active() ? "联网可用"
+                                                       : "网络未连接");
+  const String detail = !queuedReadingText.isEmpty()
+                            ? "按 A 开始阅读"
+                            : readingModeAddress();
+  avatar.showModeMenu("模式选择", "阅读模式", status, detail, nowMs);
+  startVibration(120, 34);
+  playUiSound(UiSound::Open);
+  Serial.println("Mode menu opened: reading");
+}
+
+void closeModeMenu(uint32_t nowMs) {
+  if (!modeMenuMode && !avatar.modeMenuActive()) return;
+  modeMenuMode = false;
+  modeMenuInputArmed = false;
+  readingModeWaiting = false;
+  avatar.dismissModeMenu(nowMs);
+  startVibration(85, 22);
+  playUiSound(UiSound::Close);
+}
+
+void cancelModeMenuImmediate() {
+  modeMenuMode = false;
+  modeMenuInputArmed = false;
+  readingModeWaiting = false;
+  avatar.cancelModeMenu();
+}
+
+bool startQueuedReading(uint32_t nowMs) {
+  if (queuedReadingText.isEmpty()) return false;
+  String text = queuedReadingText;
+  queuedReadingText = "";
+  cancelModeMenuImmediate();
+  const bool started = beginNarrativeText(text, nowMs, true);
+  if (started) Serial.println("Queued reading started");
+  return started;
+}
+
+void handleModeMenuInput(uint32_t nowMs) {
+  if (!modeMenuMode || !avatar.modeMenuReady()) return;
+  if (!modeMenuInputArmed) {
+    if (!M5.BtnA.isPressed() && !M5.BtnB.isPressed()) {
+      modeMenuInputArmed = true;
+    }
+    return;
+  }
+  if (M5.BtnB.wasClicked()) {
+    noteActivity(nowMs);
+    closeModeMenu(nowMs);
+    return;
+  }
+  if (!M5.BtnA.wasClicked()) return;
+
+  noteActivity(nowMs);
+  if (startQueuedReading(nowMs)) return;
+  if (!readingService.active()) {
+    avatar.setModeMenuContent("阅读模式", "网络未连接",
+                              "请先在设置中连接 Wi-Fi");
+    startVibration(80, 55);
+    playUiSound(UiSound::Warning);
+    return;
+  }
+  readingModeWaiting = true;
+  refreshModeMenuContent();
+  startVibration(95, 26);
+  playUiSound(UiSound::Confirm);
+  Serial.printf("Reading mode waiting: http://%s/read\n",
+                wifiPairing.localIp().c_str());
+}
+
+void updateReadingService(uint32_t nowMs) {
+  const bool wasActive = readingService.active();
+  readingService.update(wifiPairing.connected() &&
+                        !wifiPairing.portalActive());
+  if (wasActive != readingService.active() && modeMenuMode) {
+    refreshModeMenuContent();
+  }
+
+  String text;
+  if (!readingService.takePendingText(text)) return;
+  queuedReadingText = text;
+  noteActivity(nowMs);
+  if (modeMenuMode && readingModeWaiting) {
+    startQueuedReading(nowMs);
+  } else if (modeMenuMode) {
+    refreshModeMenuContent();
+    startVibration(85, 24);
+    playUiSound(UiSound::Confirm);
+  }
 }
 
 void updateBirthdayEasterEgg(uint32_t nowMs) {
@@ -686,6 +821,7 @@ void renderWifiFace(uint32_t nowMs) {
 }
 
 void enterWifiMode(uint32_t nowMs) {
+  if (modeMenuMode || avatar.modeMenuActive()) cancelModeMenuImmediate();
   if (avatar.narrativeTextActive()) avatar.cancelNarrativeText();
   if (eyeMessageMode) closeEyeMessage(nowMs);
   noteActivity(nowMs);
@@ -721,6 +857,7 @@ void leaveWifiMode(uint32_t nowMs) {
 }
 
 void startWifiPairingPortal(uint32_t nowMs) {
+  readingService.stop();
   wifiPairing.startPortal(nowMs);
 }
 
@@ -1012,6 +1149,7 @@ void renderEyeMenu(uint32_t nowMs) {
 }
 
 void openEyeMenu(uint32_t nowMs) {
+  if (modeMenuMode || avatar.modeMenuActive()) cancelModeMenuImmediate();
   if (avatar.narrativeTextActive()) avatar.cancelNarrativeText();
   if (eyeMessageMode) closeEyeMessage(nowMs);
   noteActivity(nowMs);
@@ -1313,7 +1451,8 @@ void updateCompanionSensors(uint32_t nowMs) {
       Serial.printf("Charging state changed: %s\n",
                     charging ? "connected" : "disconnected");
       if (!diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
-          !eyeMenuMode && !avatar.narrativeTextActive() &&
+          !eyeMenuMode && !modeMenuMode && !avatar.modeMenuActive() &&
+          !avatar.narrativeTextActive() &&
           screenPowerState != ScreenPowerState::Sleeping) {
         trigger(charging ? ExpressionId::Excited : ExpressionId::Curious,
                 nowMs, 220);
@@ -1324,7 +1463,8 @@ void updateCompanionSensors(uint32_t nowMs) {
   const bool lowBattery = batteryLevel >= 0 &&
                           batteryLevel <= kLowBatteryThreshold && !charging;
   if (lowBattery && !diagnosticMode && !statusMode && !eyeMessageMode &&
-      !wifiMode && !eyeMenuMode && !avatar.narrativeTextActive() &&
+      !wifiMode && !eyeMenuMode && !modeMenuMode &&
+      !avatar.modeMenuActive() && !avatar.narrativeTextActive() &&
       screenPowerState != ScreenPowerState::Sleeping &&
       (lastLowBatteryReminderMs == 0 ||
        nowMs - lastLowBatteryReminderMs >= kLowBatteryReminderIntervalMs)) {
@@ -1336,7 +1476,7 @@ void updateCompanionSensors(uint32_t nowMs) {
 }
 
 void updateDisplayPower(uint32_t nowMs) {
-  if (wifiMode || eyeMenuMode) {
+  if (wifiMode || eyeMenuMode || modeMenuMode || avatar.modeMenuActive()) {
     lastActivityMs = nowMs;
     return;
   }
@@ -1511,6 +1651,7 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
   }
   if (command == "wifi retry") {
     enterWifiMode(nowMs);
+    readingService.stop();
     wifiPairing.retry(nowMs);
     wifiPairing.consumeStateChanged();
     renderWifiFace(nowMs);
@@ -1520,6 +1661,7 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
     settings.wifiSsid = "";
     settings.wifiPassword = "";
     saveSettings();
+    readingService.stop();
     wifiPairing.forget();
     enterWifiMode(nowMs);
     return true;
@@ -1830,6 +1972,7 @@ void refreshDiagnosticSensors() {
 }
 
 void setDiagnosticMode(bool enabled) {
+  if (modeMenuMode || avatar.modeMenuActive()) cancelModeMenuImmediate();
   if (avatar.narrativeTextActive()) avatar.cancelNarrativeText();
   if (eyeMessageMode) closeEyeMessage(millis());
   if (statusMode) hideStatus();
@@ -2055,6 +2198,7 @@ void setup() {
   Serial.println("Hold A+B for hardware diagnostics");
   Serial.println(
       "Hold A: eye menu; swipe down: battery; Wi-Fi page hold A: pair/change network; B: back");
+  Serial.println("Hold B: mode menu; reading page: http://<device-ip>/read");
   Serial.println("Sound test: sound");
   Serial.println("Full-screen typewriter: say <UTF-8 text>");
   Serial.println(
@@ -2085,6 +2229,7 @@ void loop() {
   handleDiagnosticToggle();
   updateBirthdayEasterEgg(nowMs);
   updateWifiPairing(nowMs);
+  updateReadingService(nowMs);
   updateNetworkTime(nowMs);
   updateCompanionSensors(nowMs);
   handleSerialCommands(nowMs);
@@ -2099,6 +2244,9 @@ void loop() {
       startVibration(55, 18);
       playUiSound(UiSound::Close);
     }
+  } else if (modeMenuMode || avatar.modeMenuActive()) {
+    handleModeMenuInput(nowMs);
+    avatar.update(nowMs);
   } else if (statusMode) {
     handleStatusInput(nowMs);
     if (statusMode) {
@@ -2114,13 +2262,18 @@ void loop() {
     handleEyeMenuInput(nowMs);
     if (eyeMenuMode) avatar.update(nowMs);
   } else {
-    const bool showMenuRequested =
+    const bool showEyeMenuRequested =
         M5.BtnA.wasHold() && !M5.BtnB.isPressed();
+    const bool showModeMenuRequested =
+        M5.BtnB.wasHold() && !M5.BtnA.isPressed();
 
-    if (showMenuRequested) {
+    if (showEyeMenuRequested) {
       openEyeMenu(nowMs);
+    } else if (showModeMenuRequested) {
+      openModeMenu(nowMs);
     }
-    if (!statusMode && !wifiMode && !eyeMenuMode) {
+    if (!statusMode && !wifiMode && !eyeMenuMode && !modeMenuMode &&
+        !avatar.modeMenuActive()) {
       handleProductTouch(nowMs);
       handleImuInteraction(nowMs);
 

@@ -11,6 +11,7 @@ This roadmap separates implemented firmware from future hardware experiments.
 - expression-aware A/B eye-menu controls, vibration feedback and hardware diagnostics;
 - serial semantic commands for external controllers;
 - full-screen Unicode narrative text with circular-safe wrapping, typewriter reveal, manual cyclic paging and hold-B expression return;
+- a full-screen hold-B mode menu with network reading from a local `/read` page and volatile latest-article queue;
 - RTC-aware quiet hours, battery/charging telemetry and a compact status page;
 - expression-led Wi-Fi pairing through a temporary captive portal;
 - non-blocking NTP synchronization for China Standard Time with periodic RX8130 updates;

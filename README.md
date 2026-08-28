@@ -13,9 +13,9 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 
 ## Current firmware
 
-The current firmware version is **0.9.0**. Device motion now has persistent `low`, `medium` and `high` sensitivity profiles for tilt following and quick-movement inertia. The default `medium` profile preserves the previous response exactly; `low` is steadier and `high` reacts sooner. The profile changes input normalization only, so the centered safe-motion area remains fixed.
+The current firmware version is **0.10.0**. Hold B on the normal face to open a dedicated full-screen mode menu. Its first mode is network reading: a connected KK serves a local `/read` page, accepts one long UTF-8 article, and presents it with the existing typewriter and manual paging renderer. Persistent `low`, `medium` and `high` motion profiles remain available in the eye menu.
 
-Version 0.9.0 was built, flashed and started on real M5Stack StopWatch hardware. Serial checks exercised all three profiles and confirmed that `medium` survived a firmware restart. The eye-menu presentation and subjective hand feel still require direct user acceptance on the device.
+Version 0.10.0 was built, flashed and started on real M5Stack StopWatch hardware. The local reading page returned successfully, a UTF-8 article was accepted and queued, and the normal expression renderer remained near 60 fps. The final visual feel of the new menu transitions remains a direct on-device user acceptance item.
 
 ## Highlights
 
@@ -28,6 +28,7 @@ Version 0.9.0 was built, flashed and started on real M5Stack StopWatch hardware.
 - original soft pop, boop and blip effects are synthesized for expressions, navigation, energy status, brightness and wake events, with automatic quiet-hours muting;
 - double-click A+B together to reveal the hidden birthday greeting arranged vertically inside both eyes, or hold A+B to enter hardware diagnostics;
 - show long UTF-8 content as full-screen, six-line pages with a Unicode-aware typewriter effect and a procedural transition back to the previous expression;
+- hold B to close the current expression into a separate mode menu, then enter network reading or return smoothly to the expression;
 - hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse brightness, sound, motion sensitivity, scheduled quiet mute, network and firmware version, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; swipe down to check battery, while eye opening directly conveys the selected levels;
 - dim after 45 seconds of inactivity and clear/switch the AMOLED off after 60 seconds, with touch, button and motion wake;
 - persist brightness, motion sensitivity, idle timeouts and quiet hours in NVS;
@@ -59,7 +60,8 @@ The display gestures and the physical A/B buttons have separate roles. Short A/B
 
 | Current mode | A | B | A+B |
 | --- | --- | --- | --- |
-| Normal face | Hold for about 800 ms to open the eye menu; a short press does nothing | Short press does nothing | Double-click both together for the vertical birthday greeting; hold both for about one second to enter diagnostics |
+| Normal face | Hold for about 800 ms to open the eye menu; a short press does nothing | Hold for about 800 ms to open the mode menu; a short press does nothing | Double-click both together for the vertical birthday greeting; hold both for about one second to enter diagnostics |
+| Mode menu | Enter the selected mode | Close the menu and restore the previous face | Hold both for about one second to enter diagnostics |
 | Root eye menu | Single-click to move to the next item; double-click to open the selected item | Close the menu and restore the previous face | — |
 | Brightness page | Single-click to cycle through four levels | Return to the root menu | — |
 | Sound page | Single-click to cycle through mute plus four volume levels | Return to the root menu | — |
@@ -82,7 +84,7 @@ The menu stays within KK's expression: the item name is drawn in the left eye an
 3. **Motion sensitivity (`3/6`)** — A cycles `low`, `medium` and `high`, shown as `低`, `中` or `高` in the right eye. The saved profile controls tilt and quick-movement response; the screen-wake threshold remains conservative and unchanged.
 4. **Scheduled quiet (`4/6`)** — A toggles the saved `22:00–07:00` sound mute. It is disabled by default and affects sound only; the RTC-driven sleepy night expression remains independent.
 5. **Network (`5/6`)** — Shows disconnected, connecting, connected or failed status. Pressing A reveals `pair`, `retry` or `change network`; keep holding for about 1.8 seconds to start the temporary `KK-XXXX` access point. Connect with the lowercase password `kkfriend`, shown across the eyes as `kkfr | iend`, then use the captive portal to choose a 2.4 GHz Wi-Fi network. `XXXX` identifies the device and is not the password. The old credentials remain saved unless the candidate network connects successfully. B cancels pairing safely.
-6. **Version (`6/6`)** — Displays firmware version `0.9.0`; it does not change a setting.
+6. **Version (`6/6`)** — Displays firmware version `0.10.0`; it does not change a setting.
 
 ### Battery, automatic reactions and screen power
 
@@ -93,7 +95,11 @@ The menu stays within KK's expression: the item name is drawn in the left eye an
 - Touch, either physical button or confirmed device movement wakes the display. The eye menu, battery view and diagnostics stay awake while in use.
 - In the configured night window, entering the dim state may use the sleepy expression. The eye-menu scheduled-mute switch controls only sound during that window and is off by default.
 
-### Full-screen narrative text
+### Network reading and full-screen narrative text
+
+After KK connects to Wi-Fi, open `http://<device-ip>/read` from another device on the same local network. Paste up to 1,800 Unicode characters and 96 explicit lines, then send it to KK. Only the latest unread article is kept in RAM; it is not persisted across restart. The endpoint has no user authentication, so use it only on a trusted local network and do not expose port 80 to the public internet.
+
+On the normal face, hold B for about 800 ms. KK closes the current expression and fades in a full-screen mode menu that is visually separate from the eye menu. Press A on **Reading mode**: if an article is already queued it opens immediately; otherwise KK displays its `/read` address and waits for a submission. Press B to leave the mode menu. The temporary pairing portal and the reading server never own port 80 at the same time.
 
 Send `say <UTF-8 text>` over the serial monitor to enter narrative mode. The command preserves the message's original case, supports Chinese and explicit newlines, and accepts up to 768 bytes from the serial boundary. The renderer wraps by Unicode character into the circular screen's central safe area, uses at most six lines per page, and automatically creates additional pages.
 

@@ -42,6 +42,7 @@ constexpr float kEyeMessageFloatPixels = 0.75f;
 constexpr uint32_t kNarrativeEyeCloseMs = 320;
 constexpr uint32_t kNarrativeTextFadeMs = 260;
 constexpr uint32_t kNarrativeEyeOpenMs = 360;
+constexpr uint32_t kModeMenuFadeMs = 220;
 constexpr int kNarrativeTextWidth = 310;
 constexpr int kNarrativeLineHeight = 38;
 constexpr int kNarrativeTextLeft = 78;
@@ -1034,7 +1035,8 @@ void AvatarEngine::setEyeMessage(const String& leftText,
 }
 
 bool AvatarEngine::showNarrativeText(const String& text, uint32_t nowMs,
-                                     uint16_t glyphIntervalMs) {
+                                     uint16_t glyphIntervalMs,
+                                     bool skipEyeClose) {
   narrativeText_ = text;
   narrativeText_.trim();
   narrativeText_.replace("\r\n", "\n");
@@ -1050,7 +1052,8 @@ bool AvatarEngine::showNarrativeText(const String& text, uint32_t nowMs,
   releaseSwipe();
   narrativeActive_ = true;
   narrativeDismissAfterFade_ = false;
-  narrativePhase_ = NarrativePhase::ClosingEyes;
+  narrativePhase_ = skipEyeClose ? NarrativePhase::Typing
+                                 : NarrativePhase::ClosingEyes;
   narrativePageIndex_ = 0;
   narrativeCanvasPrepared_ = false;
   narrativeRenderedGlyphs_ = 0;
@@ -1126,12 +1129,12 @@ void AvatarEngine::layoutNarrativeText() {
       kNarrativeLinesPerPage;
 }
 
-uint16_t AvatarEngine::narrativePageGlyphCount(uint8_t page) const {
-  const uint8_t firstLine = page * kNarrativeLinesPerPage;
-  const uint8_t lastLine = std::min<uint8_t>(
+uint16_t AvatarEngine::narrativePageGlyphCount(uint16_t page) const {
+  const uint16_t firstLine = page * kNarrativeLinesPerPage;
+  const uint16_t lastLine = std::min<uint16_t>(
       narrativeLineCount_, firstLine + kNarrativeLinesPerPage);
   uint16_t total = 0;
-  for (uint8_t line = firstLine; line < lastLine; ++line) {
+  for (uint16_t line = firstLine; line < lastLine; ++line) {
     total += narrativeLineEndGlyph_[line] - narrativeLineStartGlyph_[line];
   }
   return total;
@@ -1213,6 +1216,178 @@ void AvatarEngine::cancelNarrativeText() {
   previousRightBounds_.valid = false;
 }
 
+bool AvatarEngine::modeMenuReady() const {
+  return modeMenuActive_ && modeMenuPhase_ == ModeMenuPhase::Visible;
+}
+
+void AvatarEngine::showModeMenu(const String& title, const String& item,
+                                const String& status, const String& detail,
+                                uint32_t nowMs) {
+  releaseTouch();
+  releaseSwipe();
+  modeMenuTitle_ = title;
+  modeMenuItem_ = item;
+  modeMenuStatus_ = status;
+  modeMenuDetail_ = detail;
+  modeMenuActive_ = true;
+  modeMenuCanvasPrepared_ = false;
+  modeMenuPhase_ = ModeMenuPhase::ClosingEyes;
+  modeMenuPhaseStartedMs_ = nowMs;
+  forceRender_ = true;
+  previousLeftBounds_.valid = false;
+  previousRightBounds_.valid = false;
+  Serial.println("Mode menu opening");
+}
+
+void AvatarEngine::setModeMenuContent(const String& item,
+                                      const String& status,
+                                      const String& detail) {
+  if (!modeMenuActive_) return;
+  modeMenuItem_ = item;
+  modeMenuStatus_ = status;
+  modeMenuDetail_ = detail;
+  modeMenuCanvasPrepared_ = false;
+  forceRender_ = true;
+}
+
+void AvatarEngine::dismissModeMenu(uint32_t nowMs) {
+  if (!modeMenuActive_) return;
+  if (modeMenuPhase_ == ModeMenuPhase::ClosingEyes) {
+    modeMenuPhase_ = ModeMenuPhase::OpeningEyes;
+  } else if (modeMenuPhase_ != ModeMenuPhase::OpeningEyes) {
+    modeMenuPhase_ = ModeMenuPhase::FadingOut;
+  }
+  modeMenuPhaseStartedMs_ = nowMs;
+  modeMenuCanvasPrepared_ = false;
+  forceRender_ = true;
+  Serial.println("Mode menu closing");
+}
+
+void AvatarEngine::cancelModeMenu() {
+  if (!modeMenuActive_) return;
+  modeMenuActive_ = false;
+  modeMenuCanvasPrepared_ = false;
+  modeMenuPhase_ = ModeMenuPhase::Inactive;
+  modeMenuTitle_ = "";
+  modeMenuItem_ = "";
+  modeMenuStatus_ = "";
+  modeMenuDetail_ = "";
+  modeMenuPhaseStartedMs_ = 0;
+  forceRender_ = true;
+  requiresFullClear_ = true;
+  previousLeftBounds_.valid = false;
+  previousRightBounds_.valid = false;
+}
+
+void AvatarEngine::updateModeMenu(uint32_t nowMs) {
+  if (!modeMenuActive_) return;
+  const uint32_t elapsed = nowMs - modeMenuPhaseStartedMs_;
+  switch (modeMenuPhase_) {
+    case ModeMenuPhase::ClosingEyes:
+      if (elapsed >= kNarrativeEyeCloseMs) {
+        modeMenuPhase_ = ModeMenuPhase::FadingIn;
+        modeMenuPhaseStartedMs_ = nowMs;
+        modeMenuCanvasPrepared_ = false;
+        requiresFullClear_ = true;
+      }
+      break;
+    case ModeMenuPhase::FadingIn:
+      if (elapsed >= kModeMenuFadeMs) {
+        modeMenuPhase_ = ModeMenuPhase::Visible;
+        modeMenuPhaseStartedMs_ = nowMs;
+        modeMenuCanvasPrepared_ = false;
+      }
+      break;
+    case ModeMenuPhase::Visible:
+      break;
+    case ModeMenuPhase::FadingOut:
+      if (elapsed >= kModeMenuFadeMs) {
+        modeMenuPhase_ = ModeMenuPhase::OpeningEyes;
+        modeMenuPhaseStartedMs_ = nowMs;
+        modeMenuCanvasPrepared_ = false;
+        requiresFullClear_ = true;
+      }
+      break;
+    case ModeMenuPhase::OpeningEyes:
+      if (elapsed >= kNarrativeEyeOpenMs) {
+        cancelModeMenu();
+        Serial.println("Mode menu closed; expression restored");
+      }
+      break;
+    case ModeMenuPhase::Inactive:
+      break;
+  }
+}
+
+void AvatarEngine::drawModeMenu(uint32_t nowMs) {
+  if (!modeMenuActive_) return;
+  float alpha = 1.0f;
+  if (modeMenuPhase_ == ModeMenuPhase::FadingIn) {
+    alpha = smootherStep((nowMs - modeMenuPhaseStartedMs_) /
+                         static_cast<float>(kModeMenuFadeMs));
+  } else if (modeMenuPhase_ == ModeMenuPhase::FadingOut) {
+    alpha = 1.0f - smootherStep((nowMs - modeMenuPhaseStartedMs_) /
+                                static_cast<float>(kModeMenuFadeMs));
+  }
+  alpha = clamp01(alpha);
+  const uint8_t white = static_cast<uint8_t>(lroundf(238.0f * alpha));
+  const uint8_t gray = static_cast<uint8_t>(lroundf(132.0f * alpha));
+  const uint8_t dim = static_cast<uint8_t>(lroundf(78.0f * alpha));
+  const uint16_t whiteColor = M5.Display.color565(white, white, white);
+  const uint16_t grayColor = M5.Display.color565(gray, gray, gray);
+  const uint16_t dimColor = M5.Display.color565(dim, dim, dim);
+  const int centerX = M5.Display.width() / 2;
+  const int bookHalfWidth = 52;
+  const int bookHalfHeight = 34;
+  const int bookCenterY = 180;
+
+  if (!modeMenuCanvasPrepared_) M5.Display.fillScreen(kBackground);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setFont(&fonts::efontCN_16);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(grayColor, kBackground);
+  M5.Display.drawString(modeMenuTitle_, centerX, 82);
+
+  for (int offset = 0; offset < 2; ++offset) {
+    M5.Display.drawLine(centerX, bookCenterY - bookHalfHeight + offset,
+                        centerX, bookCenterY + bookHalfHeight, whiteColor);
+    M5.Display.drawLine(centerX - bookHalfWidth,
+                        bookCenterY - bookHalfHeight + 7 + offset, centerX,
+                        bookCenterY - bookHalfHeight + offset, whiteColor);
+    M5.Display.drawLine(centerX + bookHalfWidth,
+                        bookCenterY - bookHalfHeight + 7 + offset, centerX,
+                        bookCenterY - bookHalfHeight + offset, whiteColor);
+    M5.Display.drawLine(centerX - bookHalfWidth,
+                        bookCenterY - bookHalfHeight + 7 + offset,
+                        centerX - bookHalfWidth, bookCenterY + bookHalfHeight,
+                        whiteColor);
+    M5.Display.drawLine(centerX + bookHalfWidth,
+                        bookCenterY - bookHalfHeight + 7 + offset,
+                        centerX + bookHalfWidth, bookCenterY + bookHalfHeight,
+                        whiteColor);
+    M5.Display.drawLine(centerX - bookHalfWidth,
+                        bookCenterY + bookHalfHeight, centerX,
+                        bookCenterY + bookHalfHeight + 8 + offset, whiteColor);
+    M5.Display.drawLine(centerX + bookHalfWidth,
+                        bookCenterY + bookHalfHeight, centerX,
+                        bookCenterY + bookHalfHeight + 8 + offset, whiteColor);
+  }
+
+  M5.Display.setFont(&fonts::efontCN_24_b);
+  M5.Display.setTextColor(whiteColor, kBackground);
+  M5.Display.drawString(modeMenuItem_, centerX, 274);
+  M5.Display.setFont(&fonts::efontCN_16);
+  M5.Display.setTextColor(grayColor, kBackground);
+  M5.Display.drawString(modeMenuStatus_, centerX, 316);
+  M5.Display.setTextColor(dimColor, kBackground);
+  M5.Display.drawString(modeMenuDetail_, centerX, 347);
+  M5.Display.drawString(modeMenuStatus_ == "等待长文"
+                            ? "等待投送   B 返回"
+                            : "A 进入   B 返回",
+                        centerX, 397);
+  M5.Display.setTextDatum(top_left);
+}
+
 void AvatarEngine::updateNarrativeText(uint32_t nowMs) {
   if (!narrativeActive_) return;
   const uint32_t elapsed = nowMs - narrativePhaseStartedMs_;
@@ -1271,10 +1446,10 @@ void AvatarEngine::updateNarrativeText(uint32_t nowMs) {
 void AvatarEngine::drawNarrativeGlyph(uint16_t pageGlyphIndex,
                                       uint8_t luminance) {
   if (narrativePageIndex_ >= narrativePageCount_) return;
-  const uint8_t firstLine = narrativePageIndex_ * kNarrativeLinesPerPage;
-  const uint8_t lastLine = std::min<uint8_t>(
+  const uint16_t firstLine = narrativePageIndex_ * kNarrativeLinesPerPage;
+  const uint16_t lastLine = std::min<uint16_t>(
       narrativeLineCount_, firstLine + kNarrativeLinesPerPage);
-  const uint8_t pageLineCount = lastLine - firstLine;
+  const uint16_t pageLineCount = lastLine - firstLine;
   const int firstY = M5.Display.height() / 2 -
                      static_cast<int>(pageLineCount - 1) *
                          kNarrativeLineHeight / 2;
@@ -1285,8 +1460,8 @@ void AvatarEngine::drawNarrativeGlyph(uint16_t pageGlyphIndex,
   M5.Display.setTextColor(M5.Display.color565(luminance, luminance, luminance));
 
   uint16_t remainingGlyph = pageGlyphIndex;
-  for (uint8_t lineOffset = 0; lineOffset < pageLineCount; ++lineOffset) {
-    const uint8_t line = firstLine + lineOffset;
+  for (uint16_t lineOffset = 0; lineOffset < pageLineCount; ++lineOffset) {
+    const uint16_t line = firstLine + lineOffset;
     const uint16_t lineStart = narrativeLineStartGlyph_[line];
     const uint16_t lineGlyphs =
         narrativeLineEndGlyph_[line] - lineStart;
@@ -1387,16 +1562,16 @@ void AvatarEngine::drawNarrativePage(uint32_t nowMs) {
         lroundf(kNarrativeTextWidth * progress));
     if (eraseWidth <= narrativeFadeErasedWidth_) return;
 
-    const uint8_t firstLine = narrativePageIndex_ * kNarrativeLinesPerPage;
-    const uint8_t lastLine = std::min<uint8_t>(
+    const uint16_t firstLine = narrativePageIndex_ * kNarrativeLinesPerPage;
+    const uint16_t lastLine = std::min<uint16_t>(
         narrativeLineCount_, firstLine + kNarrativeLinesPerPage);
-    const uint8_t pageLineCount = lastLine - firstLine;
+    const uint16_t pageLineCount = lastLine - firstLine;
     const int firstY = M5.Display.height() / 2 -
                        static_cast<int>(pageLineCount - 1) *
                            kNarrativeLineHeight / 2;
     const int eraseX = kNarrativeTextLeft + narrativeFadeErasedWidth_;
     const int eraseDelta = eraseWidth - narrativeFadeErasedWidth_;
-    for (uint8_t lineOffset = 0; lineOffset < pageLineCount; ++lineOffset) {
+    for (uint16_t lineOffset = 0; lineOffset < pageLineCount; ++lineOffset) {
       const int lineY = firstY + lineOffset * kNarrativeLineHeight;
       M5.Display.fillRect(eraseX, lineY - 17, eraseDelta + 1, 35,
                           kBackground);
@@ -1749,6 +1924,28 @@ void AvatarEngine::render(uint32_t nowMs) {
   const uint32_t renderStartedUs = micros();
   updateInteraction(nowMs);
   updateNarrativeText(nowMs);
+  updateModeMenu(nowMs);
+  const bool modeMenuSurfaceVisible =
+      modeMenuActive_ &&
+      (modeMenuPhase_ == ModeMenuPhase::FadingIn ||
+       modeMenuPhase_ == ModeMenuPhase::Visible ||
+       modeMenuPhase_ == ModeMenuPhase::FadingOut);
+  if (modeMenuSurfaceVisible) {
+    if (modeMenuPhase_ == ModeMenuPhase::Visible &&
+        modeMenuCanvasPrepared_) {
+      previousRenderStartedUs_ = 0;
+      return;
+    }
+    waitForVSync(nowMs);
+    M5.Display.startWrite();
+    drawModeMenu(nowMs);
+    M5.Display.endWrite();
+    modeMenuCanvasPrepared_ = true;
+    previousLeftBounds_.valid = false;
+    previousRightBounds_.valid = false;
+    recordRenderMetrics(nowMs, renderStartedUs, micros());
+    return;
+  }
   const int width = M5.Display.width();
   const int height = M5.Display.height();
   const float designScale = std::min(width, height) / kDesignSize;
@@ -1932,6 +2129,23 @@ void AvatarEngine::render(uint32_t nowMs) {
         kNarrativeClosedScale +
         (1.0f - kNarrativeClosedScale) * eyeVisibility;
     blink = std::min(blink, narrativeBlink);
+    renderedPose.leftEye.browOpacity *= eyeVisibility;
+    renderedPose.rightEye.browOpacity *= eyeVisibility;
+  }
+  if (modeMenuActive_ &&
+      (modeMenuPhase_ == ModeMenuPhase::ClosingEyes ||
+       modeMenuPhase_ == ModeMenuPhase::OpeningEyes)) {
+    const uint32_t elapsed = nowMs - modeMenuPhaseStartedMs_;
+    const bool closing = modeMenuPhase_ == ModeMenuPhase::ClosingEyes;
+    const float progress = smootherStep(
+        elapsed / static_cast<float>(closing ? kNarrativeEyeCloseMs
+                                             : kNarrativeEyeOpenMs));
+    constexpr float kModeMenuClosedScale = 0.035f;
+    const float eyeVisibility = closing ? 1.0f - progress : progress;
+    const float menuBlink =
+        kModeMenuClosedScale +
+        (1.0f - kModeMenuClosedScale) * eyeVisibility;
+    blink = std::min(blink, menuBlink);
     renderedPose.leftEye.browOpacity *= eyeVisibility;
     renderedPose.rightEye.browOpacity *= eyeVisibility;
   }

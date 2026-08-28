@@ -24,7 +24,7 @@ constexpr uint16_t kImuCalibrationSamples = 30;
 constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
-constexpr char kFirmwareVersion[] = "0.12.1";
+constexpr char kFirmwareVersion[] = "0.12.2";
 constexpr char kPreferencesNamespace[] = "kk-avatar";
 constexpr uint8_t kSettingsSchemaVersion = 9;
 constexpr uint8_t kDefaultBrightness = 150;
@@ -134,6 +134,7 @@ bool wifiMode = false;
 bool eyeMenuMode = false;
 bool modeMenuMode = false;
 bool modeMenuInputArmed = false;
+bool modeMenuOpenInputArmed = true;
 bool readingModeWaiting = false;
 bool publicFetchRequested = false;
 bool publicDocumentActive = false;
@@ -821,6 +822,9 @@ void refreshModeMenuContent() {
 
 void openModeMenu(uint32_t nowMs) {
   noteActivity(nowMs);
+  // Require a full B release before another normal-face hold can open the
+  // menu. This also isolates the hold that entered the menu from later modes.
+  modeMenuOpenInputArmed = false;
   modeMenuMode = true;
   modeMenuInputArmed = false;
   readingModeWaiting = false;
@@ -1375,6 +1379,7 @@ void handlePublicImageInput(uint32_t nowMs) {
       M5.BtnB.isPressed() &&
       nowMs - publicImageBPressedAtMs >= kNarrativeDismissHoldMs) {
     publicImageBLongTriggered = true;
+    modeMenuOpenInputArmed = false;
     beginPublicImageFade(nowMs, true);
     startVibration(75, 24);
     playUiSound(UiSound::Close);
@@ -2929,6 +2934,10 @@ void handleNarrativeTextInput(uint32_t nowMs) {
       M5.BtnB.isPressed() &&
       nowMs - narrativeBPressedAtMs >= kNarrativeDismissHoldMs) {
     narrativeBLongTriggered = true;
+    // The global B hold event belongs to the narrative dismissal. Keep the
+    // normal-face mode-menu shortcut disarmed until the user releases B, even
+    // if the eye-opening transition finishes while the button is still down.
+    modeMenuOpenInputArmed = false;
     noteActivity(nowMs);
     if (publicDocumentActive) {
       if (localDocumentActive) {
@@ -3141,10 +3150,13 @@ void loop() {
     handleEyeMenuInput(nowMs);
     if (eyeMenuMode) avatar.update(nowMs);
   } else {
+    if (!modeMenuOpenInputArmed && !M5.BtnB.isPressed()) {
+      modeMenuOpenInputArmed = true;
+    }
     const bool showEyeMenuRequested =
         M5.BtnA.wasHold() && !M5.BtnB.isPressed();
     const bool showModeMenuRequested =
-        M5.BtnB.wasHold() && !M5.BtnA.isPressed();
+        modeMenuOpenInputArmed && M5.BtnB.wasHold() && !M5.BtnA.isPressed();
 
     if (showEyeMenuRequested) {
       openEyeMenu(nowMs);

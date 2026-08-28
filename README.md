@@ -13,9 +13,9 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 
 ## Current firmware
 
-The current firmware version is **0.12.1**. Reading mode includes an on-device bookshelf alongside the existing public HTTPS source. The bundled Chinese novel *Zero Lamp* is split into 42 validated reading units, and KK persists the current chapter, content block and page in NVS. Chapter and reading controls are now bidirectional: A goes backward in content, while B goes forward.
+The current firmware version is **0.12.2**. Reading mode includes an on-device bookshelf alongside the existing public HTTPS source. The bundled Chinese novel *Zero Lamp* is split into 42 validated reading units, and KK persists the current chapter, content block and page in NVS. Chapter and reading controls are bidirectional: A goes backward in content, while B goes forward. Version 0.12.2 also prevents the B hold used to dismiss reading from leaking into the normal face and reopening the mode menu; B must be fully released before a new menu hold can begin.
 
-Version 0.12.0 and its SPIFFS library image were built and flashed to real M5Stack StopWatch hardware. The device mounted the library, reported all 42 entries, loaded a 22-page chapter, saved progress at page 12 and reopened directly at page 12. Stable reading and normal-expression windows remained near 60 fps with 100% TE synchronization and no frame timeouts. Version 0.12.1 passes a complete PlatformIO build; its new previous-page, previous-block and previous-chapter button paths still require physical-device acceptance because the watch was not connected for this update.
+Version 0.12.2 and the SPIFFS library image were built and flashed to real M5Stack StopWatch hardware. The device mounted all 42 entries and retained its chapter/block/page progress. On-device logs confirmed B advancing pages, A returning from `9/22` to `8/22`, and a 1,507 ms B hold dismissing reading without reopening the mode menu. Stable reading and normal-expression windows remained near 59.5–59.7 fps with 100% TE synchronization and no frame timeouts. Previous-chapter selection and public-image backward navigation still need separate physical acceptance.
 
 ## Highlights
 
@@ -89,7 +89,7 @@ The menu stays within KK's expression: the item name is drawn in the left eye an
 3. **Motion sensitivity (`3/6`)** — A cycles `low`, `medium` and `high`, shown as `低`, `中` or `高` in the right eye. The saved profile controls tilt and quick-movement response; the screen-wake threshold remains conservative and unchanged.
 4. **Scheduled quiet (`4/6`)** — A toggles the saved `22:00–07:00` sound mute. It is disabled by default and affects sound only; the RTC-driven sleepy night expression remains independent.
 5. **Network (`5/6`)** — Hold A for about 1.8 seconds to start the temporary `KK-XXXX` access point. The captive portal lists saved networks and lets you add/update or delete them, up to five profiles. New credentials are saved only after a successful connection; passwords are never echoed. During normal startup or recovery KK scans and selects the strongest visible saved profile.
-6. **Version (`6/6`)** — Displays firmware version `0.12.1`; it does not change a setting.
+6. **Version (`6/6`)** — Displays firmware version `0.12.2`; it does not change a setting.
 
 ### Battery, automatic reactions and screen power
 

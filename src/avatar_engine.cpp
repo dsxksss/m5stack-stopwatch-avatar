@@ -1461,7 +1461,7 @@ void AvatarEngine::drawModeMenu(uint32_t nowMs) {
   M5.Display.setTextColor(dimColor, kBackground);
   M5.Display.drawString(modeMenuDetail_, centerX, 347);
   const String footer =
-      modeMenuDetail_.startsWith("A下 B上")
+      modeMenuDetail_.startsWith("A上 B下")
           ? "短按切章 · 长按 B 返回"
           : (modeMenuStatus_ == "等待长文" ? "等待投送   B 返回"
                                              : "A 进入   B 返回");

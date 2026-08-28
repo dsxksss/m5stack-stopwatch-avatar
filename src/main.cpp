@@ -24,7 +24,7 @@ constexpr uint16_t kImuCalibrationSamples = 30;
 constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
-constexpr char kFirmwareVersion[] = "0.12.2";
+constexpr char kFirmwareVersion[] = "0.12.3";
 constexpr char kPreferencesNamespace[] = "kk-avatar";
 constexpr uint8_t kSettingsSchemaVersion = 9;
 constexpr uint8_t kDefaultBrightness = 150;
@@ -791,7 +791,7 @@ void refreshModeMenuContent() {
         conciseChapterTitle(localLibrary.chapterTitle(modeMenuChapterIndex)),
         String(modeMenuChapterIndex + 1) + "/" +
             String(localLibrary.chapterCount()),
-        "A下 B上 · 双击A阅读");
+        "A上 B下 · 双击A阅读");
     return;
   }
 
@@ -901,11 +901,10 @@ void handleModeMenuInput(uint32_t nowMs) {
     if (modeMenuPage == ModeMenuPage::LocalChapters &&
         localLibrary.available()) {
       modeMenuChapterIndex =
-          (modeMenuChapterIndex + localLibrary.chapterCount() - 1) %
-          localLibrary.chapterCount();
+          (modeMenuChapterIndex + 1) % localLibrary.chapterCount();
       refreshModeMenuContent();
       startVibration(70, 18);
-      playUiSound(UiSound::Previous);
+      playUiSound(UiSound::Next);
     } else if (modeMenuPage == ModeMenuPage::Sources) {
       closeModeMenu(nowMs);
     } else {
@@ -928,11 +927,14 @@ void handleModeMenuInput(uint32_t nowMs) {
           modeMenuSourceIndex = (modeMenuSourceIndex + 1) % 2;
         } else if (localLibrary.available()) {
           modeMenuChapterIndex =
-              (modeMenuChapterIndex + 1) % localLibrary.chapterCount();
+              (modeMenuChapterIndex + localLibrary.chapterCount() - 1) %
+              localLibrary.chapterCount();
         }
         refreshModeMenuContent();
         startVibration(70, 18);
-        playUiSound(UiSound::Next);
+        playUiSound(modeMenuPage == ModeMenuPage::LocalChapters
+                        ? UiSound::Previous
+                        : UiSound::Next);
       }
       return;
     }

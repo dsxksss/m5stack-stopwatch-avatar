@@ -13,9 +13,9 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 
 ## Current firmware
 
-The current firmware version is **0.12.2**. Reading mode includes an on-device bookshelf alongside the existing public HTTPS source. The bundled Chinese novel *Zero Lamp* is split into 42 validated reading units, and KK persists the current chapter, content block and page in NVS. Chapter and reading controls are bidirectional: A goes backward in content, while B goes forward. Version 0.12.2 also prevents the B hold used to dismiss reading from leaking into the normal face and reopening the mode menu; B must be fully released before a new menu hold can begin.
+The current firmware version is **0.12.3**. Reading mode includes an on-device bookshelf alongside the existing public HTTPS source. The bundled Chinese novel *Zero Lamp* is split into 42 validated reading units, and KK persists the current chapter, content block and page in NVS. Direction controls are now consistent at both levels: A selects the previous chapter/page and B selects the next chapter/page. The B-release isolation introduced in 0.12.2 remains in place, so dismissing reading cannot reopen the mode menu with the same hold.
 
-Version 0.12.2 and the SPIFFS library image were built and flashed to real M5Stack StopWatch hardware. The device mounted all 42 entries and retained its chapter/block/page progress. On-device logs confirmed B advancing pages, A returning from `9/22` to `8/22`, and a 1,507 ms B hold dismissing reading without reopening the mode menu. Stable reading and normal-expression windows remained near 59.5–59.7 fps with 100% TE synchronization and no frame timeouts. Previous-chapter selection and public-image backward navigation still need separate physical acceptance.
+Version 0.12.3 was built and flashed to real M5Stack StopWatch hardware with the existing 42-entry SPIFFS library retained. The previous 0.12.2 run confirmed B advancing pages, A returning from `9/22` to `8/22`, and a 1,507 ms B hold dismissing reading without reopening the mode menu. The new chapter-order mapping compiles and runs on-device; its final button feel and public-image backward navigation still need user-facing physical acceptance.
 
 ## Highlights
 
@@ -64,7 +64,7 @@ The display gestures and the physical A/B buttons have separate roles. Short A/B
 | --- | --- | --- | --- |
 | Normal face | Hold for about 800 ms to open the eye menu; a short press does nothing | Hold for about 800 ms to open the mode menu; a short press does nothing | Double-click both together for the vertical birthday greeting; hold both for about one second to enter diagnostics |
 | Reading source menu | Single-click to switch between on-device and public sources; double-click to enter | Close the menu and restore the previous face | Hold both for about one second to enter diagnostics |
-| On-device chapter menu | Single-click for the next chapter; double-click to read/resume | Single-click for the previous chapter; hold to return to reading sources | — |
+| On-device chapter menu | Single-click for the previous chapter; double-click to read/resume | Single-click for the next chapter; hold to return to reading sources | — |
 | Public source page | Fetch/read the configured source or wait for LAN delivery | Return to reading sources; hold to close | — |
 | Root eye menu | Single-click to move to the next item; double-click to open the selected item | Close the menu and restore the previous face | — |
 | Brightness page | Single-click to cycle through four levels | Return to the root menu | — |
@@ -89,7 +89,7 @@ The menu stays within KK's expression: the item name is drawn in the left eye an
 3. **Motion sensitivity (`3/6`)** — A cycles `low`, `medium` and `high`, shown as `低`, `中` or `高` in the right eye. The saved profile controls tilt and quick-movement response; the screen-wake threshold remains conservative and unchanged.
 4. **Scheduled quiet (`4/6`)** — A toggles the saved `22:00–07:00` sound mute. It is disabled by default and affects sound only; the RTC-driven sleepy night expression remains independent.
 5. **Network (`5/6`)** — Hold A for about 1.8 seconds to start the temporary `KK-XXXX` access point. The captive portal lists saved networks and lets you add/update or delete them, up to five profiles. New credentials are saved only after a successful connection; passwords are never echoed. During normal startup or recovery KK scans and selects the strongest visible saved profile.
-6. **Version (`6/6`)** — Displays firmware version `0.12.2`; it does not change a setting.
+6. **Version (`6/6`)** — Displays firmware version `0.12.3`; it does not change a setting.
 
 ### Battery, automatic reactions and screen power
 
@@ -102,7 +102,7 @@ The menu stays within KK's expression: the item name is drawn in the left eye an
 
 ### On-device library, network reading and full-screen narrative text
 
-Hold B on the normal face. In Reading mode, single-click A to switch between the on-device bookshelf and the public source, then double-click A to enter. The bundled *Zero Lamp* library works offline. Inside its chapter list, single-click A moves to the next chapter, single-click B moves to the previous chapter, and double-click A reads or resumes; holding B returns to the source list. KK saves the chapter, content block and page, advances to the next chapter after the current unit, and resumes at the saved page after leaving or rebooting.
+Hold B on the normal face. In Reading mode, single-click A to switch between the on-device bookshelf and the public source, then double-click A to enter. The bundled *Zero Lamp* library works offline. Inside its chapter list, single-click A moves to the previous chapter, single-click B moves to the next chapter, and double-click A reads or resumes; holding B returns to the source list. KK saves the chapter, content block and page, advances to the next chapter after the current unit, and resumes at the saved page after leaving or rebooting.
 
 After KK connects to Wi-Fi, open `http://<device-ip>/read` from another device on the same local network. You can still send one volatile article, or save the public HTTPS URL of a `KKREAD/1` manifest. Hold B and press A in Reading mode to let KK fetch that source itself. The local configuration endpoint has no authentication, so use it only on a trusted LAN and never expose port 80; remote manifests and image blocks are fetched with certificate-validated HTTPS.
 

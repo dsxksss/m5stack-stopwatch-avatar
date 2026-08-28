@@ -121,6 +121,7 @@ class AvatarEngine {
                          uint16_t glyphIntervalMs = 62,
                          bool skipEyeClose = false);
   void advanceNarrativeText(uint32_t nowMs);
+  void advanceNarrativeTextToBlack(uint32_t nowMs);
   void dismissNarrativeText(uint32_t nowMs);
   void cancelNarrativeText();
   void showModeMenu(const String& title, const String& item,
@@ -130,6 +131,7 @@ class AvatarEngine {
                           const String& detail);
   void dismissModeMenu(uint32_t nowMs);
   void cancelModeMenu();
+  void restoreExpressionFromBlack(uint32_t nowMs);
   void beginEnergyDismiss(uint32_t nowMs);
   void clearEnergyUi();
   void invalidate();
@@ -139,6 +141,8 @@ class AvatarEngine {
   const char* activeName() const;
   bool ready() const { return ready_; }
   bool narrativeTextActive() const { return narrativeActive_; }
+  bool narrativeHoldingLastPage() const;
+  bool narrativeReadyForNextBlock() const;
   bool modeMenuActive() const { return modeMenuActive_; }
   bool modeMenuReady() const;
 
@@ -149,6 +153,7 @@ class AvatarEngine {
     Typing,
     Holding,
     FadingText,
+    AwaitingNext,
     OpeningEyes,
   };
 
@@ -253,6 +258,7 @@ class AvatarEngine {
   uint32_t energyDismissStartedMs_ = 0;
   bool narrativeActive_ = false;
   bool narrativeDismissAfterFade_ = false;
+  bool narrativeAdvanceToBlack_ = false;
   NarrativePhase narrativePhase_ = NarrativePhase::Inactive;
   String narrativeText_;
   uint16_t narrativeGlyphOffsets_[kNarrativeMaxGlyphs + 1]{};

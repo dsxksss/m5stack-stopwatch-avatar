@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "avatar_engine.h"
+#include "public_reader.h"
 #include "reading_service.h"
 #include "ui_sound.h"
 #include "wifi_pairing.h"
@@ -22,9 +23,9 @@ constexpr uint16_t kImuCalibrationSamples = 30;
 constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
-constexpr char kFirmwareVersion[] = "0.10.0";
+constexpr char kFirmwareVersion[] = "0.11.0";
 constexpr char kPreferencesNamespace[] = "kk-avatar";
-constexpr uint8_t kSettingsSchemaVersion = 6;
+constexpr uint8_t kSettingsSchemaVersion = 8;
 constexpr uint8_t kDefaultBrightness = 150;
 constexpr uint8_t kDefaultSoundVolume = 56;
 constexpr uint8_t kSoundVolumeLevels[] = {0, 32, 56, 84, 112};
@@ -57,6 +58,7 @@ constexpr uint32_t kLowBatteryReminderIntervalMs = 15UL * 60UL * 1000UL;
 constexpr uint8_t kLowBatteryThreshold = 15;
 constexpr size_t kSerialCommandMaxBytes = 768;
 constexpr uint32_t kNarrativeDismissHoldMs = 1500;
+constexpr uint32_t kReadingImageFadeMs = 180;
 
 enum class GestureAxis : uint8_t { None, Horizontal, Vertical };
 enum class ScreenPowerState : uint8_t { Bright, Dimmed, Sleeping };
@@ -92,8 +94,9 @@ struct CompanionSettings {
   uint8_t brightness = kDefaultBrightness;
   uint8_t soundVolume = kDefaultSoundVolume;
   MotionSensitivity motionSensitivity = MotionSensitivity::Medium;
-  String wifiSsid;
-  String wifiPassword;
+  WifiProfile wifiProfiles[WifiPairing::kMaxProfiles];
+  uint8_t wifiProfileCount = 0;
+  String readingSourceUrl;
   uint32_t dimAfterMs = kDefaultDimAfterMs;
   uint32_t screenOffAfterMs = kDefaultScreenOffAfterMs;
   uint8_t quietStartHour = 22;
@@ -111,6 +114,7 @@ struct EyeMessage {
 M5IOE1 ioe;
 AvatarEngine avatar;
 ReadingService readingService;
+PublicReader publicReader;
 UiSoundEngine uiSounds;
 WifiPairing wifiPairing;
 Preferences preferences;
@@ -125,6 +129,14 @@ bool eyeMenuMode = false;
 bool modeMenuMode = false;
 bool modeMenuInputArmed = false;
 bool readingModeWaiting = false;
+bool publicFetchRequested = false;
+bool publicDocumentActive = false;
+bool publicImageMode = false;
+bool publicImageFading = false;
+bool publicImageExitAfterFade = false;
+bool publicAdvancePending = false;
+bool publicImageBPressTracking = false;
+bool publicImageBLongTriggered = false;
 bool wifiPairingInputArmed = false;
 bool wifiPairingHoldLatched = false;
 bool eyeMenuInputArmed = false;
@@ -152,6 +164,8 @@ uint32_t eyeMessageDismissesAtMs = 0;
 uint32_t birthdayADoubleClickAtMs = 0;
 uint32_t birthdayBDoubleClickAtMs = 0;
 uint32_t narrativeBPressedAtMs = 0;
+uint32_t publicImageBPressedAtMs = 0;
+uint32_t publicImageFadeStartedMs = 0;
 uint32_t eyeMenuAClickDeadlineMs = 0;
 uint32_t eyeMenuPageReadyAtMs = 0;
 uint32_t lastPowerSampleMs = 0;
@@ -179,6 +193,8 @@ uint8_t motionWakeSampleCount = 0;
 String lastDiagnosticEvent = "Waiting for input";
 String serialCommand;
 String queuedReadingText;
+String publicImageError;
+uint8_t publicBlockIndex = 0;
 GestureAxis gestureAxis = GestureAxis::None;
 bool gestureCommitted = false;
 int32_t batteryLevel = -1;
@@ -227,8 +243,28 @@ void loadSettings() {
       preferences.getUChar("sound_vol", kDefaultSoundVolume);
   settings.motionSensitivity = static_cast<MotionSensitivity>(
       std::min<uint8_t>(preferences.getUChar("motion_sens", 1), 2));
-  settings.wifiSsid = preferences.getString("wifi_ssid", "");
-  settings.wifiPassword = preferences.getString("wifi_pass", "");
+  const uint8_t storedSchema = preferences.getUChar("schema", 1);
+  settings.wifiProfileCount = 0;
+  for (uint8_t index = 0; index < WifiPairing::kMaxProfiles; ++index) {
+    const String ssidKey = "wifi_s" + String(index);
+    const String passwordKey = "wifi_p" + String(index);
+    const String ssid = preferences.getString(ssidKey.c_str(), "");
+    if (ssid.isEmpty()) continue;
+    settings.wifiProfiles[settings.wifiProfileCount].ssid = ssid;
+    settings.wifiProfiles[settings.wifiProfileCount].password =
+        preferences.getString(passwordKey.c_str(), "");
+    ++settings.wifiProfileCount;
+  }
+  if (settings.wifiProfileCount == 0) {
+    const String legacySsid = preferences.getString("wifi_ssid", "");
+    if (!legacySsid.isEmpty()) {
+      settings.wifiProfiles[0].ssid = legacySsid;
+      settings.wifiProfiles[0].password =
+          preferences.getString("wifi_pass", "");
+      settings.wifiProfileCount = 1;
+      Serial.println("Migrated one saved Wi-Fi network into profile storage");
+    }
+  }
   settings.dimAfterMs = clampTimeoutSeconds(
       preferences.getUInt("dim_sec", kDefaultDimAfterMs / 1000UL),
       kDefaultDimAfterMs);
@@ -238,10 +274,13 @@ void loadSettings() {
   settings.quietStartHour = preferences.getUChar("quiet_start", 22);
   settings.quietEndHour = preferences.getUChar("quiet_end", 7);
   settings.quietMuteEnabled = preferences.getBool("quiet_mute", false);
+  settings.readingSourceUrl = preferences.getString("read_source", "");
+  if (!PublicReader::validHttpsUrl(settings.readingSourceUrl)) {
+    settings.readingSourceUrl = "";
+  }
 
   // Version 1 used 60 s for dimming and 300 s for panel sleep. Migrate that
   // exact old default so existing devices now become fully dark at 60 s.
-  const uint8_t storedSchema = preferences.getUChar("schema", 1);
   if (storedSchema < kSettingsSchemaVersion &&
       settings.dimAfterMs == 60UL * 1000UL &&
       settings.screenOffAfterMs == 5UL * 60UL * 1000UL) {
@@ -275,14 +314,36 @@ void saveSettings() {
       preferences.getUChar("motion_sens") != motionSensitivityIndex()) {
     preferences.putUChar("motion_sens", motionSensitivityIndex());
   }
-  if (!preferences.isKey("wifi_ssid") ||
-      preferences.getString("wifi_ssid") != settings.wifiSsid) {
-    preferences.putString("wifi_ssid", settings.wifiSsid);
+  if (!preferences.isKey("wifi_count") ||
+      preferences.getUChar("wifi_count") != settings.wifiProfileCount) {
+    preferences.putUChar("wifi_count", settings.wifiProfileCount);
   }
-  if (!preferences.isKey("wifi_pass") ||
-      preferences.getString("wifi_pass") != settings.wifiPassword) {
-    preferences.putString("wifi_pass", settings.wifiPassword);
+  for (uint8_t index = 0; index < WifiPairing::kMaxProfiles; ++index) {
+    const String ssidKey = "wifi_s" + String(index);
+    const String passwordKey = "wifi_p" + String(index);
+    const String ssid = index < settings.wifiProfileCount
+                            ? settings.wifiProfiles[index].ssid
+                            : String();
+    const String password = index < settings.wifiProfileCount
+                                ? settings.wifiProfiles[index].password
+                                : String();
+    if (!preferences.isKey(ssidKey.c_str()) ||
+        preferences.getString(ssidKey.c_str()) != ssid) {
+      preferences.putString(ssidKey.c_str(), ssid);
+    }
+    if (!preferences.isKey(passwordKey.c_str()) ||
+        preferences.getString(passwordKey.c_str()) != password) {
+      preferences.putString(passwordKey.c_str(), password);
+    }
   }
+  preferences.putString(
+      "wifi_ssid", settings.wifiProfileCount > 0
+                       ? settings.wifiProfiles[0].ssid
+                       : String());
+  preferences.putString(
+      "wifi_pass", settings.wifiProfileCount > 0
+                       ? settings.wifiProfiles[0].password
+                       : String());
   preferences.putUInt("dim_sec", settings.dimAfterMs / 1000UL);
   preferences.putUInt("off_sec", settings.screenOffAfterMs / 1000UL);
   preferences.putUChar("quiet_start", settings.quietStartHour);
@@ -290,6 +351,10 @@ void saveSettings() {
   if (!preferences.isKey("quiet_mute") ||
       preferences.getBool("quiet_mute") != settings.quietMuteEnabled) {
     preferences.putBool("quiet_mute", settings.quietMuteEnabled);
+  }
+  if (!preferences.isKey("read_source") ||
+      preferences.getString("read_source") != settings.readingSourceUrl) {
+    preferences.putString("read_source", settings.readingSourceUrl);
   }
   preferences.putUChar("schema", kSettingsSchemaVersion);
 }
@@ -588,14 +653,14 @@ void showBirthdayEasterEgg(uint32_t nowMs) {
 bool birthdayEasterEggAvailable() {
   return !diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
          !eyeMenuMode && !modeMenuMode && !avatar.modeMenuActive() &&
-         !wifiPairing.portalActive() &&
+         !wifiPairing.portalActive() && !publicImageMode &&
          !avatar.narrativeTextActive();
 }
 
 bool narrativeTextAvailable() {
   return !diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
          !eyeMenuMode && !modeMenuMode && !avatar.modeMenuActive() &&
-         !wifiPairing.portalActive() &&
+         !wifiPairing.portalActive() && !publicImageMode &&
          !avatar.narrativeTextActive();
 }
 
@@ -629,14 +694,24 @@ String readingModeAddress() {
 
 void refreshModeMenuContent() {
   if (!modeMenuMode || !avatar.modeMenuActive()) return;
+  if (publicFetchRequested) {
+    avatar.setModeMenuContent("阅读模式", "正在更新", "安全连接公网书源");
+    return;
+  }
   if (readingModeWaiting) {
     avatar.setModeMenuContent("阅读模式", "等待长文", readingModeAddress());
     return;
   }
   if (!queuedReadingText.isEmpty()) {
     avatar.setModeMenuContent("阅读模式", "已有长文", "按 A 开始阅读");
+  } else if (!settings.readingSourceUrl.isEmpty() &&
+             wifiPairing.connected()) {
+    avatar.setModeMenuContent("阅读模式", "公网书源", "按 A 更新并阅读");
+  } else if (!settings.readingSourceUrl.isEmpty()) {
+    avatar.setModeMenuContent("阅读模式", "网络未连接",
+                              "联网后可更新书源");
   } else if (readingService.active()) {
-    avatar.setModeMenuContent("阅读模式", "联网可用",
+    avatar.setModeMenuContent("阅读模式", "配置书源",
                               wifiPairing.localIp() + "/read");
   } else {
     avatar.setModeMenuContent("阅读模式", "网络未连接",
@@ -649,14 +724,8 @@ void openModeMenu(uint32_t nowMs) {
   modeMenuMode = true;
   modeMenuInputArmed = false;
   readingModeWaiting = false;
-  const String status = !queuedReadingText.isEmpty()
-                            ? "已有长文"
-                            : (readingService.active() ? "联网可用"
-                                                       : "网络未连接");
-  const String detail = !queuedReadingText.isEmpty()
-                            ? "按 A 开始阅读"
-                            : readingModeAddress();
-  avatar.showModeMenu("模式选择", "阅读模式", status, detail, nowMs);
+  avatar.showModeMenu("模式选择", "阅读模式", "", "", nowMs);
+  refreshModeMenuContent();
   startVibration(120, 34);
   playUiSound(UiSound::Open);
   Serial.println("Mode menu opened: reading");
@@ -706,6 +775,28 @@ void handleModeMenuInput(uint32_t nowMs) {
 
   noteActivity(nowMs);
   if (startQueuedReading(nowMs)) return;
+  if (!settings.readingSourceUrl.isEmpty()) {
+    if (!wifiPairing.connected()) {
+      avatar.setModeMenuContent("阅读模式", "网络未连接",
+                                "请先在设置中连接 Wi-Fi");
+      startVibration(80, 55);
+      playUiSound(UiSound::Warning);
+      return;
+    }
+    if (!rtcValid) {
+      avatar.setModeMenuContent("阅读模式", "正在校时",
+                                "稍后再按 A 更新书源");
+      startVibration(80, 40);
+      playUiSound(UiSound::Warning);
+      return;
+    }
+    publicFetchRequested = true;
+    refreshModeMenuContent();
+    startVibration(95, 26);
+    playUiSound(UiSound::Confirm);
+    Serial.println("Public reading update requested");
+    return;
+  }
   if (!readingService.active()) {
     avatar.setModeMenuContent("阅读模式", "网络未连接",
                               "请先在设置中连接 Wi-Fi");
@@ -729,6 +820,18 @@ void updateReadingService(uint32_t nowMs) {
     refreshModeMenuContent();
   }
 
+  String sourceUrl;
+  if (readingService.takePendingSourceUrl(sourceUrl)) {
+    settings.readingSourceUrl = sourceUrl;
+    saveSettings();
+    readingService.setSourceUrl(settings.readingSourceUrl);
+    noteActivity(nowMs);
+    if (modeMenuMode) refreshModeMenuContent();
+    startVibration(85, 24);
+    playUiSound(UiSound::Confirm);
+    Serial.println("Public reading source saved");
+  }
+
   String text;
   if (!readingService.takePendingText(text)) return;
   queuedReadingText = text;
@@ -739,6 +842,255 @@ void updateReadingService(uint32_t nowMs) {
     refreshModeMenuContent();
     startVibration(85, 24);
     playUiSound(UiSound::Confirm);
+  }
+}
+
+void drawPublicReadingMessage(const String& title, const String& detail) {
+  const int centerX = M5.Display.width() / 2;
+  const int centerY = M5.Display.height() / 2;
+  M5.Display.fillScreen(TFT_BLACK);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setFont(&fonts::efontCN_24_b);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.drawString(title, centerX, centerY - 16);
+  M5.Display.setFont(&fonts::efontCN_16);
+  M5.Display.setTextColor(M5.Display.color565(150, 150, 150), TFT_BLACK);
+  M5.Display.drawString(detail, centerX, centerY + 24);
+  M5.Display.setTextDatum(top_left);
+}
+
+bool publicImageDimensions(const uint8_t* data, size_t length,
+                           uint32_t& width, uint32_t& height) {
+  width = 0;
+  height = 0;
+  if (length >= 24 && data[0] == 0x89 && data[1] == 'P' &&
+      data[2] == 'N' && data[3] == 'G') {
+    width = (static_cast<uint32_t>(data[16]) << 24) |
+            (static_cast<uint32_t>(data[17]) << 16) |
+            (static_cast<uint32_t>(data[18]) << 8) | data[19];
+    height = (static_cast<uint32_t>(data[20]) << 24) |
+             (static_cast<uint32_t>(data[21]) << 16) |
+             (static_cast<uint32_t>(data[22]) << 8) | data[23];
+    return width > 0 && height > 0;
+  }
+  if (length < 4 || data[0] != 0xFF || data[1] != 0xD8) return false;
+  size_t offset = 2;
+  while (offset + 8 < length) {
+    if (data[offset] != 0xFF) {
+      ++offset;
+      continue;
+    }
+    while (offset < length && data[offset] == 0xFF) ++offset;
+    if (offset >= length) break;
+    const uint8_t marker = data[offset++];
+    if (marker == 0xD8 || marker == 0xD9 ||
+        (marker >= 0xD0 && marker <= 0xD7)) {
+      continue;
+    }
+    if (offset + 1 >= length) break;
+    const uint16_t segmentLength =
+        (static_cast<uint16_t>(data[offset]) << 8) | data[offset + 1];
+    if (segmentLength < 2 || offset + segmentLength > length) break;
+    const bool startOfFrame =
+        (marker >= 0xC0 && marker <= 0xC3) ||
+        (marker >= 0xC5 && marker <= 0xC7) ||
+        (marker >= 0xC9 && marker <= 0xCB) ||
+        (marker >= 0xCD && marker <= 0xCF);
+    if (startOfFrame && segmentLength >= 7) {
+      height = (static_cast<uint16_t>(data[offset + 3]) << 8) |
+               data[offset + 4];
+      width = (static_cast<uint16_t>(data[offset + 5]) << 8) |
+              data[offset + 6];
+      return width > 0 && height > 0;
+    }
+    offset += segmentLength;
+  }
+  return false;
+}
+
+void drawPublicImagePage() {
+  const uint8_t* data = publicReader.imageData();
+  const size_t length = publicReader.imageLength();
+  const int screenWidth = M5.Display.width();
+  const int screenHeight = M5.Display.height();
+  M5.Display.fillScreen(TFT_BLACK);
+
+  bool drawn = false;
+  uint32_t imageWidth = 0;
+  uint32_t imageHeight = 0;
+  if (data && publicImageDimensions(data, length, imageWidth, imageHeight)) {
+    const float scale = std::min(
+        1.0f, std::min((screenWidth - 28.0f) / imageWidth,
+                       (screenHeight - 28.0f) / imageHeight));
+    if (publicReader.imageIsPng()) {
+      drawn = M5.Display.drawPng(data, length, screenWidth / 2,
+                                 screenHeight / 2, 0, 0, 0, 0, scale, 0.0f,
+                                 middle_center);
+    } else {
+      drawn = M5.Display.drawJpg(data, length, screenWidth / 2,
+                                 screenHeight / 2, 0, 0, 0, 0, scale, 0.0f,
+                                 middle_center);
+    }
+  }
+  if (!drawn) {
+    publicImageError = "图片解码失败";
+    drawPublicReadingMessage("图片暂不可用", "轻按翻页，长按 B 退出");
+    Serial.println("Public reading image decode failed");
+  } else {
+    Serial.printf("Public reading image displayed: width=%u height=%u\n",
+                  static_cast<unsigned>(imageWidth),
+                  static_cast<unsigned>(imageHeight));
+  }
+
+  M5.Display.setFont(&fonts::efontCN_16);
+  M5.Display.setTextDatum(middle_center);
+  const String page = String(publicBlockIndex + 1) + "/" +
+                      String(publicReader.blockCount());
+  const int labelWidth = M5.Display.textWidth(page) + 18;
+  M5.Display.fillRoundRect((screenWidth - labelWidth) / 2,
+                           screenHeight - 35, labelWidth, 25, 12, TFT_BLACK);
+  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
+  M5.Display.drawString(page, screenWidth / 2, screenHeight - 23);
+  M5.Display.setTextDatum(top_left);
+}
+
+void finishPublicReadingFromBlack(uint32_t nowMs) {
+  publicDocumentActive = false;
+  publicImageMode = false;
+  publicImageFading = false;
+  publicImageExitAfterFade = false;
+  publicAdvancePending = false;
+  publicImageBPressTracking = false;
+  publicImageBLongTriggered = false;
+  publicImageError = "";
+  publicReader.clear();
+  avatar.restoreExpressionFromBlack(nowMs);
+  startVibration(55, 18);
+  playUiSound(UiSound::Close);
+  Serial.println("Public reading closed; expression restoring");
+}
+
+bool startPublicBlock(uint8_t index, uint32_t nowMs) {
+  if (!publicDocumentActive || publicReader.blockCount() == 0) return false;
+  publicBlockIndex = index % publicReader.blockCount();
+  publicAdvancePending = false;
+  publicImageError = "";
+  const ReadingBlock& block = publicReader.block(publicBlockIndex);
+  if (block.type == ReadingBlockType::Text) {
+    publicImageMode = false;
+    publicReader.releaseImage();
+    avatar.cancelNarrativeText();
+    const bool started = beginNarrativeText(block.content, nowMs, true);
+    if (!started) finishPublicReadingFromBlack(nowMs);
+    return started;
+  }
+
+  avatar.cancelNarrativeText();
+  publicImageMode = true;
+  publicImageFading = false;
+  publicImageBPressTracking = false;
+  publicImageBLongTriggered = false;
+  drawPublicReadingMessage("正在加载图片", String(publicBlockIndex + 1) + "/" +
+                                             String(publicReader.blockCount()));
+  String error;
+  if (!publicReader.downloadImage(publicBlockIndex, error)) {
+    publicImageError = error;
+    drawPublicReadingMessage("图片加载失败", error);
+  } else {
+    drawPublicImagePage();
+  }
+  startVibration(45, 16);
+  return true;
+}
+
+void advancePublicBlock(uint32_t nowMs) {
+  if (!publicDocumentActive || publicReader.blockCount() == 0) return;
+  startPublicBlock((publicBlockIndex + 1) % publicReader.blockCount(), nowMs);
+}
+
+void updatePublicReadingSource(uint32_t nowMs) {
+  if (!publicFetchRequested) return;
+  publicFetchRequested = false;
+  if (!modeMenuMode || !wifiPairing.connected() ||
+      settings.readingSourceUrl.isEmpty()) {
+    refreshModeMenuContent();
+    return;
+  }
+  String error;
+  if (!publicReader.fetchDocument(settings.readingSourceUrl, error)) {
+    avatar.setModeMenuContent("阅读模式", "更新失败", error);
+    startVibration(80, 65);
+    playUiSound(UiSound::Warning);
+    Serial.println("Public reading manifest rejected");
+    return;
+  }
+
+  cancelModeMenuImmediate();
+  publicDocumentActive = true;
+  publicBlockIndex = 0;
+  M5.Display.fillScreen(TFT_BLACK);
+  startPublicBlock(0, nowMs);
+  Serial.println("Public reading started");
+}
+
+void beginPublicImageFade(uint32_t nowMs, bool exitAfterFade) {
+  if (!publicImageMode || publicImageFading) return;
+  publicImageFading = true;
+  publicImageExitAfterFade = exitAfterFade;
+  publicImageFadeStartedMs = nowMs;
+}
+
+void handlePublicImageInput(uint32_t nowMs) {
+  if (!publicImageMode) return;
+  const auto touch = M5.Touch.getDetail(0);
+  if (M5.BtnB.wasPressed()) {
+    publicImageBPressTracking = true;
+    publicImageBLongTriggered = false;
+    publicImageBPressedAtMs = nowMs;
+    noteActivity(nowMs);
+  }
+  if (publicImageBPressTracking && !publicImageBLongTriggered &&
+      M5.BtnB.isPressed() &&
+      nowMs - publicImageBPressedAtMs >= kNarrativeDismissHoldMs) {
+    publicImageBLongTriggered = true;
+    beginPublicImageFade(nowMs, true);
+    startVibration(75, 24);
+    playUiSound(UiSound::Close);
+    return;
+  }
+  const bool bReleased = M5.BtnB.wasReleased();
+  const bool bShortPress = bReleased && publicImageBPressTracking &&
+                           !publicImageBLongTriggered;
+  if (bReleased) {
+    publicImageBPressTracking = false;
+    publicImageBLongTriggered = false;
+    publicImageBPressedAtMs = 0;
+  }
+  if (!publicImageFading &&
+      (M5.BtnA.wasClicked() || bShortPress || touch.wasClicked())) {
+    noteActivity(nowMs);
+    beginPublicImageFade(nowMs, false);
+    startVibration(45, 16);
+    playUiSound(UiSound::Next);
+  }
+}
+
+void updatePublicImage(uint32_t nowMs) {
+  if (!publicImageMode || !publicImageFading) return;
+  const uint32_t elapsed = nowMs - publicImageFadeStartedMs;
+  const int width = M5.Display.width();
+  const int eraseWidth = std::min<int>(
+      width, static_cast<int>((static_cast<uint64_t>(width) * elapsed) /
+                              kReadingImageFadeMs));
+  M5.Display.fillRect(0, 0, eraseWidth, M5.Display.height(), TFT_BLACK);
+  if (elapsed < kReadingImageFadeMs) return;
+  M5.Display.fillScreen(TFT_BLACK);
+  if (publicImageExitAfterFade) {
+    finishPublicReadingFromBlack(nowMs);
+  } else {
+    publicImageMode = false;
+    publicImageFading = false;
+    advancePublicBlock(nowMs);
   }
 }
 
@@ -789,7 +1141,7 @@ void renderWifiFace(uint32_t nowMs) {
   switch (wifiPairing.state()) {
     case WifiPairing::State::Offline:
       leftText = "长按";
-      rightText = "配网";
+      rightText = "管理";
       expression = ExpressionId::Curious;
       break;
     case WifiPairing::State::Connecting:
@@ -863,14 +1215,19 @@ void startWifiPairingPortal(uint32_t nowMs) {
 
 void updateWifiPairing(uint32_t nowMs) {
   wifiPairing.update(nowMs);
-  String newSsid;
-  String newPassword;
-  if (wifiPairing.takeNewCredentials(newSsid, newPassword)) {
-    settings.wifiSsid = newSsid;
-    settings.wifiPassword = newPassword;
+  WifiProfile updatedProfiles[WifiPairing::kMaxProfiles];
+  uint8_t updatedProfileCount = 0;
+  if (wifiPairing.takeProfilesChanged(updatedProfiles,
+                                      updatedProfileCount)) {
+    settings.wifiProfileCount = updatedProfileCount;
+    for (uint8_t index = 0; index < WifiPairing::kMaxProfiles; ++index) {
+      settings.wifiProfiles[index] =
+          index < updatedProfileCount ? updatedProfiles[index]
+                                      : WifiProfile{};
+    }
     saveSettings();
-    Serial.printf("Wi-Fi credentials saved: ssid=%s\n",
-                  settings.wifiSsid.c_str());
+    Serial.printf("Wi-Fi profile storage updated: count=%u\n",
+                  settings.wifiProfileCount);
   }
   if (!wifiPairing.consumeStateChanged()) return;
   const bool menuWifiVisible =
@@ -983,7 +1340,7 @@ void handleWifiInput(uint32_t nowMs) {
     noteActivity(nowMs);
     startVibration(95, 24);
     if (!wifiPairing.portalActive()) {
-      avatar.setEyeMessage("长按", "配网", nowMs, 1500);
+      avatar.setEyeMessage("长按", "管理", nowMs, 1500);
       avatar.invalidate();
     } else {
       renderWifiFace(nowMs);
@@ -1243,10 +1600,8 @@ void handleEyeMenuInput(uint32_t nowMs) {
   if (eyeMenuPage == EyeMenuPage::Wifi) {
     if (M5.BtnA.wasPressed() && !wifiPairing.portalActive()) {
       noteActivity(nowMs);
-      const bool connected = wifiPairing.connected();
-      const bool failed = wifiPairing.state() == WifiPairing::State::Failed;
-      avatar.setEyeMessage(connected ? "换网" : (failed ? "重试" : "配网"),
-                           "按住", nowMs, kWifiPairingHoldMs + 600);
+      avatar.setEyeMessage("网络", "管理", nowMs,
+                           kWifiPairingHoldMs + 600);
       avatar.invalidate();
     }
     if (M5.BtnA.wasReleased()) eyeMenuWifiHoldLatched = false;
@@ -1452,7 +1807,7 @@ void updateCompanionSensors(uint32_t nowMs) {
                     charging ? "connected" : "disconnected");
       if (!diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
           !eyeMenuMode && !modeMenuMode && !avatar.modeMenuActive() &&
-          !avatar.narrativeTextActive() &&
+          !avatar.narrativeTextActive() && !publicImageMode &&
           screenPowerState != ScreenPowerState::Sleeping) {
         trigger(charging ? ExpressionId::Excited : ExpressionId::Curious,
                 nowMs, 220);
@@ -1465,6 +1820,7 @@ void updateCompanionSensors(uint32_t nowMs) {
   if (lowBattery && !diagnosticMode && !statusMode && !eyeMessageMode &&
       !wifiMode && !eyeMenuMode && !modeMenuMode &&
       !avatar.modeMenuActive() && !avatar.narrativeTextActive() &&
+      !publicImageMode &&
       screenPowerState != ScreenPowerState::Sleeping &&
       (lastLowBatteryReminderMs == 0 ||
        nowMs - lastLowBatteryReminderMs >= kLowBatteryReminderIntervalMs)) {
@@ -1481,7 +1837,7 @@ void updateDisplayPower(uint32_t nowMs) {
     return;
   }
   if (diagnosticMode || statusMode || eyeMessageMode ||
-      avatar.narrativeTextActive()) {
+      avatar.narrativeTextActive() || publicImageMode) {
     return;
   }
   const uint32_t inactiveMs = nowMs - lastActivityMs;
@@ -1532,9 +1888,9 @@ void printCompanionStatus() {
       settings.quietMuteEnabled ? "on" : "off",
       settings.quietStartHour, settings.quietEndHour,
       wifiPairing.stateName(), wifiPairing.localIp().c_str());
-  Serial.printf("Wi-Fi detail: ssid=%s state=%s ip=%s\n",
-                settings.wifiSsid.isEmpty() ? "--" : settings.wifiSsid.c_str(),
-                wifiPairing.stateName(), wifiPairing.localIp().c_str());
+  Serial.printf("Wi-Fi detail: profiles=%u state=%s ip=%s\n",
+                settings.wifiProfileCount, wifiPairing.stateName(),
+                wifiPairing.localIp().c_str());
 }
 
 bool setRtcFromCommand(const String& command) {
@@ -1631,11 +1987,67 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
     return true;
   }
   if (command.startsWith("time ")) return setRtcFromCommand(command);
+  if (command == "read source") {
+    Serial.printf("Public reading source: %s\n",
+                  settings.readingSourceUrl.isEmpty() ? "not configured"
+                                                       : "configured");
+    return true;
+  }
+  if (command == "read fetch") {
+    if (settings.readingSourceUrl.isEmpty()) {
+      Serial.println("Public reading source is not configured");
+      return true;
+    }
+    if (!wifiPairing.connected()) {
+      Serial.println("Public reading fetch requires Wi-Fi");
+      return true;
+    }
+    if (!narrativeTextAvailable()) {
+      Serial.println("Public reading fetch unavailable while UI is busy");
+      return true;
+    }
+    String error;
+    if (!publicReader.fetchDocument(settings.readingSourceUrl, error)) {
+      Serial.printf("Public reading fetch rejected: %s\n", error.c_str());
+      return true;
+    }
+    publicDocumentActive = true;
+    publicBlockIndex = 0;
+    M5.Display.fillScreen(TFT_BLACK);
+    startPublicBlock(0, nowMs);
+    Serial.println("Public reading started from serial command");
+    return true;
+  }
+  if (command == "read next") {
+    if (!publicDocumentActive) {
+      Serial.println("Public reading is not active");
+    } else if (publicImageMode) {
+      beginPublicImageFade(nowMs, false);
+      Serial.println("Public reading image advancing");
+    } else if (avatar.narrativeHoldingLastPage()) {
+      publicAdvancePending = true;
+      avatar.advanceNarrativeTextToBlack(nowMs);
+    } else {
+      avatar.advanceNarrativeText(nowMs);
+    }
+    return true;
+  }
+  if (command == "read close") {
+    if (!publicDocumentActive) {
+      Serial.println("Public reading is not active");
+    } else if (publicImageMode) {
+      beginPublicImageFade(nowMs, true);
+    } else {
+      publicDocumentActive = false;
+      publicAdvancePending = false;
+      publicReader.clear();
+      avatar.dismissNarrativeText(nowMs);
+    }
+    return true;
+  }
   if (command == "wifi") {
-    Serial.printf("Wi-Fi: state=%s ssid=%s ip=%s ap=%s\n",
-                  wifiPairing.stateName(),
-                  settings.wifiSsid.isEmpty() ? "--"
-                                              : settings.wifiSsid.c_str(),
+    Serial.printf("Wi-Fi: state=%s profiles=%u ip=%s ap=%s\n",
+                  wifiPairing.stateName(), settings.wifiProfileCount,
                   wifiPairing.localIp().c_str(),
                   wifiPairing.accessPointName().c_str());
     return true;
@@ -1658,11 +2070,13 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
     return true;
   }
   if (command == "wifi forget") {
-    settings.wifiSsid = "";
-    settings.wifiPassword = "";
-    saveSettings();
     readingService.stop();
     wifiPairing.forget();
+    settings.wifiProfileCount = 0;
+    for (uint8_t index = 0; index < WifiPairing::kMaxProfiles; ++index) {
+      settings.wifiProfiles[index] = WifiProfile{};
+    }
+    saveSettings();
     enterWifiMode(nowMs);
     return true;
   }
@@ -2130,6 +2544,11 @@ void handleNarrativeTextInput(uint32_t nowMs) {
       nowMs - narrativeBPressedAtMs >= kNarrativeDismissHoldMs) {
     narrativeBLongTriggered = true;
     noteActivity(nowMs);
+    if (publicDocumentActive) {
+      publicDocumentActive = false;
+      publicAdvancePending = false;
+      publicReader.clear();
+    }
     avatar.dismissNarrativeText(nowMs);
     startVibration(75, 24);
     playUiSound(UiSound::Close);
@@ -2147,14 +2566,20 @@ void handleNarrativeTextInput(uint32_t nowMs) {
     narrativeBPressedAtMs = 0;
   }
 
-  if (M5.BtnA.wasClicked() || bShortPress || touch.wasClicked()) {
+  const bool aShortPress = M5.BtnA.wasClicked();
+  if (aShortPress || bShortPress || touch.wasClicked()) {
     noteActivity(nowMs);
-    avatar.advanceNarrativeText(nowMs);
+    if (publicDocumentActive && avatar.narrativeHoldingLastPage()) {
+      publicAdvancePending = true;
+      avatar.advanceNarrativeTextToBlack(nowMs);
+    } else {
+      avatar.advanceNarrativeText(nowMs);
+    }
     startVibration(45, 16);
     playUiSound(UiSound::Next);
     Serial.printf("Narrative input: %s, advancing\n",
                   bShortPress ? "B short press" :
-                  (M5.BtnA.wasClicked() ? "A short press" : "display tap"));
+                  (aShortPress ? "A short press" : "display tap"));
   }
 }
 
@@ -2168,6 +2593,7 @@ void setup() {
   Serial.begin(115200);
   serialCommand.reserve(kSerialCommandMaxBytes);
   loadSettings();
+  readingService.setSourceUrl(settings.readingSourceUrl);
   const bool soundReady = uiSounds.begin(settings.soundVolume);
 
   M5.Display.setRotation(0);
@@ -2186,7 +2612,8 @@ void setup() {
                           M5.Display.height() / 2);
     Serial.println("Avatar sprite allocation failed");
   }
-  wifiPairing.begin(settings.wifiSsid, settings.wifiPassword, millis());
+  wifiPairing.begin(settings.wifiProfiles, settings.wifiProfileCount,
+                    millis());
 
   Serial.println("Expression device started");
   Serial.printf("Firmware version: %s\n", kFirmwareVersion);
@@ -2197,8 +2624,10 @@ void setup() {
   Serial.println("Playback test: once|loop|pingpong <expression>");
   Serial.println("Hold A+B for hardware diagnostics");
   Serial.println(
-      "Hold A: eye menu; swipe down: battery; Wi-Fi page hold A: pair/change network; B: back");
-  Serial.println("Hold B: mode menu; reading page: http://<device-ip>/read");
+      "Hold A: eye menu; swipe down: battery; Wi-Fi page hold A: manage saved networks; B: back");
+  Serial.println(
+      "Hold B: mode menu; reading/source page: http://<device-ip>/read");
+  Serial.println("Reading diagnostics: read source|fetch|next|close");
   Serial.println("Sound test: sound");
   Serial.println("Full-screen typewriter: say <UTF-8 text>");
   Serial.println(
@@ -2231,16 +2660,23 @@ void loop() {
   updateWifiPairing(nowMs);
   updateReadingService(nowMs);
   updateNetworkTime(nowMs);
+  updatePublicReadingSource(nowMs);
   updateCompanionSensors(nowMs);
   handleSerialCommands(nowMs);
 
   if (diagnosticMode) {
     handleDiagnosticInput(nowMs);
+  } else if (publicImageMode) {
+    handlePublicImageInput(nowMs);
+    updatePublicImage(nowMs);
   } else if (avatar.narrativeTextActive()) {
     handleNarrativeTextInput(nowMs);
     const bool wasActive = avatar.narrativeTextActive();
     avatar.update(nowMs);
-    if (wasActive && !avatar.narrativeTextActive()) {
+    if (publicAdvancePending && avatar.narrativeReadyForNextBlock()) {
+      avatar.cancelNarrativeText();
+      advancePublicBlock(nowMs);
+    } else if (wasActive && !avatar.narrativeTextActive()) {
       startVibration(55, 18);
       playUiSound(UiSound::Close);
     }

@@ -1052,6 +1052,7 @@ bool AvatarEngine::showNarrativeText(const String& text, uint32_t nowMs,
   releaseSwipe();
   narrativeActive_ = true;
   narrativeDismissAfterFade_ = false;
+  narrativeAdvanceToBlack_ = false;
   narrativePhase_ = skipEyeClose ? NarrativePhase::Typing
                                  : NarrativePhase::ClosingEyes;
   narrativePageIndex_ = 0;
@@ -1174,6 +1175,8 @@ void AvatarEngine::advanceNarrativeText(uint32_t nowMs) {
     case NarrativePhase::FadingText:
       narrativePhaseStartedMs_ = nowMs - kNarrativeTextFadeMs;
       break;
+    case NarrativePhase::AwaitingNext:
+      break;
     case NarrativePhase::OpeningEyes:
       cancelNarrativeText();
       break;
@@ -1181,6 +1184,24 @@ void AvatarEngine::advanceNarrativeText(uint32_t nowMs) {
       break;
   }
   forceRender_ = true;
+}
+
+void AvatarEngine::advanceNarrativeTextToBlack(uint32_t nowMs) {
+  if (!narrativeHoldingLastPage()) return;
+  narrativeAdvanceToBlack_ = true;
+  beginNarrativeFade(nowMs, true);
+  Serial.printf("Narrative final page %u/%u fading to next block\n",
+                narrativePageIndex_ + 1, narrativePageCount_);
+}
+
+bool AvatarEngine::narrativeHoldingLastPage() const {
+  return narrativeActive_ && narrativePhase_ == NarrativePhase::Holding &&
+         narrativePageCount_ > 0 &&
+         narrativePageIndex_ + 1 == narrativePageCount_;
+}
+
+bool AvatarEngine::narrativeReadyForNextBlock() const {
+  return narrativeActive_ && narrativePhase_ == NarrativePhase::AwaitingNext;
 }
 
 void AvatarEngine::dismissNarrativeText(uint32_t nowMs) {
@@ -1201,6 +1222,7 @@ void AvatarEngine::cancelNarrativeText() {
   if (!narrativeActive_) return;
   narrativeActive_ = false;
   narrativeDismissAfterFade_ = false;
+  narrativeAdvanceToBlack_ = false;
   narrativePhase_ = NarrativePhase::Inactive;
   narrativeText_ = "";
   narrativeGlyphCount_ = 0;
@@ -1273,6 +1295,18 @@ void AvatarEngine::cancelModeMenu() {
   modeMenuStatus_ = "";
   modeMenuDetail_ = "";
   modeMenuPhaseStartedMs_ = 0;
+  forceRender_ = true;
+  requiresFullClear_ = true;
+  previousLeftBounds_.valid = false;
+  previousRightBounds_.valid = false;
+}
+
+void AvatarEngine::restoreExpressionFromBlack(uint32_t nowMs) {
+  cancelModeMenu();
+  modeMenuActive_ = true;
+  modeMenuCanvasPrepared_ = false;
+  modeMenuPhase_ = ModeMenuPhase::OpeningEyes;
+  modeMenuPhaseStartedMs_ = nowMs;
   forceRender_ = true;
   requiresFullClear_ = true;
   previousLeftBounds_.valid = false;
@@ -1425,12 +1459,17 @@ void AvatarEngine::updateNarrativeText(uint32_t nowMs) {
           narrativeCanvasPrepared_ = false;
           narrativeRenderedGlyphs_ = 0;
           narrativeFadeErasedWidth_ = 0;
+        } else if (narrativeAdvanceToBlack_) {
+          narrativePhase_ = NarrativePhase::AwaitingNext;
+          narrativePhaseStartedMs_ = nowMs;
         } else {
           narrativePhase_ = NarrativePhase::OpeningEyes;
           narrativePhaseStartedMs_ = nowMs;
         }
         requiresFullClear_ = true;
       }
+      break;
+    case NarrativePhase::AwaitingNext:
       break;
     case NarrativePhase::OpeningEyes:
       if (elapsed >= kNarrativeEyeOpenMs) {
@@ -2182,6 +2221,14 @@ void AvatarEngine::render(uint32_t nowMs) {
     M5.Display.startWrite();
     drawNarrativePage(nowMs);
     M5.Display.endWrite();
+    previousLeftBounds_.valid = false;
+    previousRightBounds_.valid = false;
+    recordRenderMetrics(nowMs, renderStartedUs, micros());
+    return;
+  }
+  if (narrativeActive_ && narrativePhase_ == NarrativePhase::AwaitingNext) {
+    waitForVSync(nowMs);
+    M5.Display.fillScreen(kBackground);
     previousLeftBounds_.valid = false;
     previousRightBounds_.valid = false;
     recordRenderMetrics(nowMs, renderStartedUs, micros());

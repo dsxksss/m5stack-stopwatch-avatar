@@ -13,9 +13,9 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 
 ## Current firmware
 
-The current firmware version is **0.10.0**. Hold B on the normal face to open a dedicated full-screen mode menu. Its first mode is network reading: a connected KK serves a local `/read` page, accepts one long UTF-8 article, and presents it with the existing typewriter and manual paging renderer. Persistent `low`, `medium` and `high` motion profiles remain available in the eye menu.
+The current firmware version is **0.11.0**. KK can store up to five 2.4 GHz Wi-Fi profiles and automatically connect to the strongest visible saved network. Reading mode can now pull a public HTTPS `KKREAD/1` manifest containing ordered typewriter-text and JPEG/PNG image blocks.
 
-Version 0.10.0 was built, flashed and started on real M5Stack StopWatch hardware. The local reading page returned successfully, a UTF-8 article was accepted and queued, and the normal expression renderer remained near 60 fps. The final visual feel of the new menu transitions remains a direct on-device user acceptance item.
+Version 0.11.0 was built, flashed and started on real M5Stack StopWatch hardware. It recovered the pre-upgrade saved network, validated a public TLS certificate, parsed a two-block manifest, rendered its text block and downloaded/decoded its PNG block. The normal expression renderer remained near 60 fps. Roaming among multiple real access points and a broader image-size matrix remain user acceptance items.
 
 ## Highlights
 
@@ -29,6 +29,7 @@ Version 0.10.0 was built, flashed and started on real M5Stack StopWatch hardware
 - double-click A+B together to reveal the hidden birthday greeting arranged vertically inside both eyes, or hold A+B to enter hardware diagnostics;
 - show long UTF-8 content as full-screen, six-line pages with a Unicode-aware typewriter effect and a procedural transition back to the previous expression;
 - hold B to close the current expression into a separate mode menu, then enter network reading or return smoothly to the expression;
+- store up to five Wi-Fi profiles, manage them from the captive portal, and select the strongest visible saved network automatically;
 - hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse brightness, sound, motion sensitivity, scheduled quiet mute, network and firmware version, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; swipe down to check battery, while eye opening directly conveys the selected levels;
 - dim after 45 seconds of inactivity and clear/switch the AMOLED off after 60 seconds, with touch, button and motion wake;
 - persist brightness, motion sensitivity, idle timeouts and quiet hours in NVS;
@@ -67,10 +68,11 @@ The display gestures and the physical A/B buttons have separate roles. Short A/B
 | Sound page | Single-click to cycle through mute plus four volume levels | Return to the root menu | — |
 | Motion sensitivity page | Single-click to cycle through low, medium and high | Return to the root menu | — |
 | Scheduled quiet page | Single-click to toggle scheduled mute | Return to the root menu | — |
-| Network page | Hold for about 1.8 seconds to pair, retry or change network; a short press only refreshes the status | Cancel an active portal and return to the root menu | — |
+| Network page | Hold for about 1.8 seconds to open saved-network management; a short press only refreshes status | Cancel an active portal and return to the root menu | — |
 | Version page | Read-only; a click only gives haptic feedback | Return to the root menu | — |
 | Battery view | No setting action | Close early | — |
 | Full-screen narrative text | Click to reveal the current page or advance | Click to reveal/advance; hold to dismiss | Hold both for about one second to enter diagnostics |
+| Public image page | Advance to the next content block | Advance; hold to dismiss | — |
 | Diagnostics | Test vibration | Redraw the diagnostic screen | Hold both for about one second to return to the face |
 
 A single A click in the root menu is committed after the 420 ms double-click window. This small delay lets a second click open the current item instead of advancing it. Touch remains available inside eye-menu pages for gaze following, but it does not alter settings.
@@ -83,8 +85,8 @@ The menu stays within KK's expression: the item name is drawn in the left eye an
 2. **Sound (`2/6`)** — A cycles `0/4–4/4`; `0/4` is mute. The right-eye opening represents the volume level, and non-muted selections play a short preview.
 3. **Motion sensitivity (`3/6`)** — A cycles `low`, `medium` and `high`, shown as `低`, `中` or `高` in the right eye. The saved profile controls tilt and quick-movement response; the screen-wake threshold remains conservative and unchanged.
 4. **Scheduled quiet (`4/6`)** — A toggles the saved `22:00–07:00` sound mute. It is disabled by default and affects sound only; the RTC-driven sleepy night expression remains independent.
-5. **Network (`5/6`)** — Shows disconnected, connecting, connected or failed status. Pressing A reveals `pair`, `retry` or `change network`; keep holding for about 1.8 seconds to start the temporary `KK-XXXX` access point. Connect with the lowercase password `kkfriend`, shown across the eyes as `kkfr | iend`, then use the captive portal to choose a 2.4 GHz Wi-Fi network. `XXXX` identifies the device and is not the password. The old credentials remain saved unless the candidate network connects successfully. B cancels pairing safely.
-6. **Version (`6/6`)** — Displays firmware version `0.10.0`; it does not change a setting.
+5. **Network (`5/6`)** — Hold A for about 1.8 seconds to start the temporary `KK-XXXX` access point. The captive portal lists saved networks and lets you add/update or delete them, up to five profiles. New credentials are saved only after a successful connection; passwords are never echoed. During normal startup or recovery KK scans and selects the strongest visible saved profile.
+6. **Version (`6/6`)** — Displays firmware version `0.11.0`; it does not change a setting.
 
 ### Battery, automatic reactions and screen power
 
@@ -97,9 +99,9 @@ The menu stays within KK's expression: the item name is drawn in the left eye an
 
 ### Network reading and full-screen narrative text
 
-After KK connects to Wi-Fi, open `http://<device-ip>/read` from another device on the same local network. Paste up to 1,800 Unicode characters and 96 explicit lines, then send it to KK. Only the latest unread article is kept in RAM; it is not persisted across restart. The endpoint has no user authentication, so use it only on a trusted local network and do not expose port 80 to the public internet.
+After KK connects to Wi-Fi, open `http://<device-ip>/read` from another device on the same local network. You can still send one volatile article, or save the public HTTPS URL of a `KKREAD/1` manifest. Hold B and press A in Reading mode to let KK fetch that source itself. The local configuration endpoint has no authentication, so use it only on a trusted LAN and never expose port 80; remote manifests and image blocks are fetched with certificate-validated HTTPS.
 
-On the normal face, hold B for about 800 ms. KK closes the current expression and fades in a full-screen mode menu that is visually separate from the eye menu. Press A on **Reading mode**: if an article is already queued it opens immediately; otherwise KK displays its `/read` address and waits for a submission. Press B to leave the mode menu. The temporary pairing portal and the reading server never own port 80 at the same time.
+One manifest may contain up to 12 ordered blocks. Text blocks keep the 1,800-character/96-line limits and the existing typewriter renderer. Image blocks must be absolute HTTPS JPEG/PNG URLs and are capped at 768 KiB; they are aspect-fitted onto the black round display. A, short B or a display tap advances, while holding B for 1.5 seconds exits. See [`docs/READING_SOURCES.md`](docs/READING_SOURCES.md) for the format.
 
 Send `say <UTF-8 text>` over the serial monitor to enter narrative mode. The command preserves the message's original case, supports Chinese and explicit newlines, and accepts up to 768 bytes from the serial boundary. The renderer wraps by Unicode character into the circular screen's central safe area, uses at most six lines per page, and automatically creates additional pages.
 
@@ -171,7 +173,7 @@ screen off
 say 小谷宝贝，今天也要好好休息。
 ```
 
-Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight saving). KK synchronizes after Wi-Fi connects, retries after one minute on failure, and rewrites the RTC every six hours; serial time setting remains available. `dim` and `screenoff` use seconds; brightness, motion sensitivity, timeouts, the scheduled-mute switch, quiet hours and Wi-Fi credentials persist in NVS. In `KK-XXXX`, `XXXX` is the last four hexadecimal digits derived from this device's unique chip ID, used only to distinguish nearby KK devices. The temporary hotspot password is the lowercase word `kkfriend`; while the portal is active the eyes show it as `kkfr | iend`. The pairing portal accepts 2.4 GHz networks, runs for at most five minutes and never prints the submitted router password. A candidate network must connect successfully before it replaces the saved credentials; otherwise KK restores the previous network.
+Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight saving). KK synchronizes after Wi-Fi connects, retries after one minute on failure, and rewrites the RTC every six hours. Brightness, motion sensitivity, timeouts, quiet settings, up to five Wi-Fi profiles and the public reading-source URL persist in NVS. The temporary `KK-XXXX` portal runs for at most five minutes and never echoes or logs router passwords; a candidate is saved only after a successful connection.
 
 ## Repository map
 
@@ -180,6 +182,8 @@ Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight sav
 | `src/avatar_engine.*` | Expression catalogue, timelines, easing, drawing and interaction physics |
 | `src/main.cpp` | Device setup, touch/IMU/buttons, vibration, diagnostics and serial commands |
 | `src/wifi_pairing.*` | Non-blocking station connection, temporary captive portal and credential handoff |
+| `src/reading_service.*` | Local reading/source configuration page and validation |
+| `src/public_reader.*` | Public HTTPS manifest, text-block and JPEG/PNG retrieval |
 | `docs/HARDWARE_BASELINE.md` | Hardware capabilities and verification boundary |
 | `docs/ENGINEERING_NOTES.md` | Rendering experiments, measurements and implementation decisions |
 | `docs/ROADMAP.md` | Planned work and intentionally unsupported features |
@@ -187,7 +191,7 @@ Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight sav
 ## Known limitations
 
 - The microphone and speech/LLM service are not connected yet. Wi-Fi pairing is only the transport foundation; serial commands still simulate semantic voice events.
-- Full-screen narrative text currently enters through the serial/external-control boundary; it does not yet have an on-device authoring or voice input flow.
+- KK does not scrape arbitrary web pages or directly execute Legado source rules; public reading uses the documented `KKREAD/1` interchange format.
 - Deep sleep and external expansion ports are not integrated. The current power strategy switches off only the AMOLED and keeps input sampling active for quick wake-up.
 - The network time zone is currently fixed to China Standard Time; other regions still need a time-zone setting.
 - Long-term battery life has not been measured; the default timeouts are a conservative starting point.

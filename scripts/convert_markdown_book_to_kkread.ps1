@@ -263,9 +263,8 @@ $readme = @"
 
 原稿 SHA-256：$sourceHash
 
-这些文件目前只是本地书包。要让设备从公网读取，需要先放到公开或受控的 HTTPS
-静态托管服务，再把某个 .kkread 文件的绝对 HTTPS 地址保存到 KK 的 /read 页面。
-公开托管前请先确认作品的公开范围与版权授权。
+这些文件只用于生成设备内置书库。catalog.kkbook 与 manifests 目录会写入
+SPIFFS；原始 Markdown 副本和完整性目录只保留在仓库中，不写入设备。
 "@
 [IO.File]::WriteAllText((Join-Path $outputRoot 'README.md'), $readme.TrimStart() + "`n", $Utf8NoBom)
 

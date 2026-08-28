@@ -8,7 +8,7 @@
 
 #include "avatar_engine.h"
 #include "local_library.h"
-#include "public_reader.h"
+#include "reading_document.h"
 #include "reading_service.h"
 #include "ui_sound.h"
 #include "wifi_pairing.h"
@@ -24,9 +24,9 @@ constexpr uint16_t kImuCalibrationSamples = 30;
 constexpr int16_t kGestureDirectionLockPx = 12;
 constexpr int16_t kGestureCommitPx = 52;
 constexpr uint16_t kSwipeTransitionMs = 160;
-constexpr char kFirmwareVersion[] = "0.12.3";
+constexpr char kFirmwareVersion[] = "0.13.0";
 constexpr char kPreferencesNamespace[] = "kk-avatar";
-constexpr uint8_t kSettingsSchemaVersion = 9;
+constexpr uint8_t kSettingsSchemaVersion = 10;
 constexpr uint8_t kDefaultBrightness = 150;
 constexpr uint8_t kDefaultSoundVolume = 56;
 constexpr uint8_t kSoundVolumeLevels[] = {0, 32, 56, 84, 112};
@@ -59,12 +59,11 @@ constexpr uint32_t kLowBatteryReminderIntervalMs = 15UL * 60UL * 1000UL;
 constexpr uint8_t kLowBatteryThreshold = 15;
 constexpr size_t kSerialCommandMaxBytes = 768;
 constexpr uint32_t kNarrativeDismissHoldMs = 1500;
-constexpr uint32_t kReadingImageFadeMs = 180;
 
 enum class GestureAxis : uint8_t { None, Horizontal, Vertical };
 enum class ScreenPowerState : uint8_t { Bright, Dimmed, Sleeping };
 enum class MotionSensitivity : uint8_t { Low, Medium, High };
-enum class ModeMenuPage : uint8_t { Sources, LocalChapters, PublicSource };
+enum class ModeMenuPage : uint8_t { Sources, LocalChapters, LanDelivery };
 
 struct MotionSensitivityProfile {
   const char* name;
@@ -98,7 +97,6 @@ struct CompanionSettings {
   MotionSensitivity motionSensitivity = MotionSensitivity::Medium;
   WifiProfile wifiProfiles[WifiPairing::kMaxProfiles];
   uint8_t wifiProfileCount = 0;
-  String readingSourceUrl;
   uint8_t localChapter = 0;
   uint8_t localBlock = 0;
   uint16_t localPage = 0;
@@ -119,7 +117,7 @@ struct EyeMessage {
 M5IOE1 ioe;
 AvatarEngine avatar;
 ReadingService readingService;
-PublicReader publicReader;
+ReadingDocument readingDocument;
 LocalLibrary localLibrary;
 UiSoundEngine uiSounds;
 WifiPairing wifiPairing;
@@ -136,17 +134,9 @@ bool modeMenuMode = false;
 bool modeMenuInputArmed = false;
 bool modeMenuOpenInputArmed = true;
 bool readingModeWaiting = false;
-bool publicFetchRequested = false;
-bool publicDocumentActive = false;
-bool localDocumentActive = false;
-bool publicImageMode = false;
-bool publicImageFading = false;
-bool publicImageExitAfterFade = false;
-bool publicImageRetreatAfterFade = false;
-bool publicAdvancePending = false;
-bool publicRetreatPending = false;
-bool publicImageBPressTracking = false;
-bool publicImageBLongTriggered = false;
+bool localReadingActive = false;
+bool readingAdvancePending = false;
+bool readingRetreatPending = false;
 bool wifiPairingInputArmed = false;
 bool wifiPairingHoldLatched = false;
 bool eyeMenuInputArmed = false;
@@ -174,8 +164,6 @@ uint32_t eyeMessageDismissesAtMs = 0;
 uint32_t birthdayADoubleClickAtMs = 0;
 uint32_t birthdayBDoubleClickAtMs = 0;
 uint32_t narrativeBPressedAtMs = 0;
-uint32_t publicImageBPressedAtMs = 0;
-uint32_t publicImageFadeStartedMs = 0;
 uint32_t eyeMenuAClickDeadlineMs = 0;
 uint32_t eyeMenuPageReadyAtMs = 0;
 uint32_t modeMenuAClickDeadlineMs = 0;
@@ -207,8 +195,7 @@ uint8_t motionWakeSampleCount = 0;
 String lastDiagnosticEvent = "Waiting for input";
 String serialCommand;
 String queuedReadingText;
-String publicImageError;
-uint8_t publicBlockIndex = 0;
+uint8_t readingBlockIndex = 0;
 GestureAxis gestureAxis = GestureAxis::None;
 bool gestureCommitted = false;
 int32_t batteryLevel = -1;
@@ -229,8 +216,8 @@ void closeEyeMenu(uint32_t nowMs);
 void closeEyeMessage(uint32_t nowMs, bool restoreExpression = true);
 void cancelModeMenuImmediate();
 bool startLocalChapter(uint32_t nowMs);
-bool startPublicBlock(uint8_t index, uint32_t nowMs,
-                      bool openLastPage = false);
+bool startLocalBlock(uint8_t index, uint32_t nowMs,
+                     bool openLastPage = false);
 
 bool reached(uint32_t now, uint32_t deadline) {
   return deadline != 0 && static_cast<int32_t>(now - deadline) >= 0;
@@ -292,9 +279,9 @@ void loadSettings() {
   settings.quietStartHour = preferences.getUChar("quiet_start", 22);
   settings.quietEndHour = preferences.getUChar("quiet_end", 7);
   settings.quietMuteEnabled = preferences.getBool("quiet_mute", false);
-  settings.readingSourceUrl = preferences.getString("read_source", "");
-  if (!PublicReader::validHttpsUrl(settings.readingSourceUrl)) {
-    settings.readingSourceUrl = "";
+  if (preferences.isKey("read_source")) {
+    preferences.remove("read_source");
+    Serial.println("Removed legacy public reading source setting");
   }
   settings.localChapter = preferences.getUChar("book_ch", 0);
   settings.localBlock = preferences.getUChar("book_blk", 0);
@@ -372,10 +359,6 @@ void saveSettings() {
   if (!preferences.isKey("quiet_mute") ||
       preferences.getBool("quiet_mute") != settings.quietMuteEnabled) {
     preferences.putBool("quiet_mute", settings.quietMuteEnabled);
-  }
-  if (!preferences.isKey("read_source") ||
-      preferences.getString("read_source") != settings.readingSourceUrl) {
-    preferences.putString("read_source", settings.readingSourceUrl);
   }
   if (!preferences.isKey("book_ch") ||
       preferences.getUChar("book_ch") != settings.localChapter) {
@@ -701,15 +684,13 @@ void showBirthdayEasterEgg(uint32_t nowMs) {
 bool birthdayEasterEggAvailable() {
   return !diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
          !eyeMenuMode && !modeMenuMode && !avatar.modeMenuActive() &&
-         !wifiPairing.portalActive() && !publicImageMode &&
-         !avatar.narrativeTextActive();
+         !wifiPairing.portalActive() && !avatar.narrativeTextActive();
 }
 
 bool narrativeTextAvailable() {
   return !diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
          !eyeMenuMode && !modeMenuMode && !avatar.modeMenuActive() &&
-         !wifiPairing.portalActive() && !publicImageMode &&
-         !avatar.narrativeTextActive();
+         !wifiPairing.portalActive() && !avatar.narrativeTextActive();
 }
 
 bool beginNarrativeText(const String& text, uint32_t nowMs,
@@ -774,7 +755,7 @@ void refreshModeMenuContent() {
 
   if (modeMenuPage == ModeMenuPage::Sources) {
     const bool localSelected = modeMenuSourceIndex == 0;
-    avatar.setModeMenuContent(localSelected ? "内置书架" : "公网书源",
+    avatar.setModeMenuContent(localSelected ? "内置书架" : "局域网投送",
                               localSelected ? "1/2" : "2/2",
                               "单击 A 换项 · 双击 A 进入");
     return;
@@ -795,27 +776,17 @@ void refreshModeMenuContent() {
     return;
   }
 
-  if (publicFetchRequested) {
-    avatar.setModeMenuContent("公网书源", "正在更新", "安全连接公网书源");
-    return;
-  }
   if (readingModeWaiting) {
-    avatar.setModeMenuContent("公网书源", "等待长文", readingModeAddress());
+    avatar.setModeMenuContent("局域网投送", "等待长文", readingModeAddress());
     return;
   }
   if (!queuedReadingText.isEmpty()) {
-    avatar.setModeMenuContent("公网书源", "已有长文", "按 A 开始阅读");
-  } else if (!settings.readingSourceUrl.isEmpty() &&
-             wifiPairing.connected()) {
-    avatar.setModeMenuContent("公网书源", "已配置", "按 A 更新并阅读");
-  } else if (!settings.readingSourceUrl.isEmpty()) {
-    avatar.setModeMenuContent("公网书源", "网络未连接",
-                              "联网后可更新书源");
+    avatar.setModeMenuContent("局域网投送", "已有长文", "按 A 开始阅读");
   } else if (readingService.active()) {
-    avatar.setModeMenuContent("公网书源", "配置书源",
+    avatar.setModeMenuContent("局域网投送", "等待发送",
                               wifiPairing.localIp() + "/read");
   } else {
-    avatar.setModeMenuContent("公网书源", "网络未连接",
+    avatar.setModeMenuContent("局域网投送", "网络未连接",
                               "请先在设置中连接 Wi-Fi");
   }
 }
@@ -918,7 +889,7 @@ void handleModeMenuInput(uint32_t nowMs) {
   }
 
   const bool aClicked = M5.BtnA.wasClicked();
-  if (modeMenuPage != ModeMenuPage::PublicSource) {
+  if (modeMenuPage != ModeMenuPage::LanDelivery) {
     if (!aClicked) {
       if (modeMenuAClickCount == 1 &&
           reached(nowMs, modeMenuAClickDeadlineMs)) {
@@ -953,7 +924,7 @@ void handleModeMenuInput(uint32_t nowMs) {
     if (modeMenuPage == ModeMenuPage::Sources) {
       modeMenuPage = modeMenuSourceIndex == 0
                          ? ModeMenuPage::LocalChapters
-                         : ModeMenuPage::PublicSource;
+                         : ModeMenuPage::LanDelivery;
       refreshModeMenuContent();
       startVibration(95, 26);
       playUiSound(UiSound::Confirm);
@@ -970,28 +941,6 @@ void handleModeMenuInput(uint32_t nowMs) {
 
   noteActivity(nowMs);
   if (startQueuedReading(nowMs)) return;
-  if (!settings.readingSourceUrl.isEmpty()) {
-    if (!wifiPairing.connected()) {
-      avatar.setModeMenuContent("阅读模式", "网络未连接",
-                                "请先在设置中连接 Wi-Fi");
-      startVibration(80, 55);
-      playUiSound(UiSound::Warning);
-      return;
-    }
-    if (!rtcValid) {
-      avatar.setModeMenuContent("阅读模式", "正在校时",
-                                "稍后再按 A 更新书源");
-      startVibration(80, 40);
-      playUiSound(UiSound::Warning);
-      return;
-    }
-    publicFetchRequested = true;
-    refreshModeMenuContent();
-    startVibration(95, 26);
-    playUiSound(UiSound::Confirm);
-    Serial.println("Public reading update requested");
-    return;
-  }
   if (!readingService.active()) {
     avatar.setModeMenuContent("阅读模式", "网络未连接",
                               "请先在设置中连接 Wi-Fi");
@@ -1015,18 +964,6 @@ void updateReadingService(uint32_t nowMs) {
     refreshModeMenuContent();
   }
 
-  String sourceUrl;
-  if (readingService.takePendingSourceUrl(sourceUrl)) {
-    settings.readingSourceUrl = sourceUrl;
-    saveSettings();
-    readingService.setSourceUrl(settings.readingSourceUrl);
-    noteActivity(nowMs);
-    if (modeMenuMode) refreshModeMenuContent();
-    startVibration(85, 24);
-    playUiSound(UiSound::Confirm);
-    Serial.println("Public reading source saved");
-  }
-
   String text;
   if (!readingService.takePendingText(text)) return;
   queuedReadingText = text;
@@ -1040,187 +977,43 @@ void updateReadingService(uint32_t nowMs) {
   }
 }
 
-void drawPublicReadingMessage(const String& title, const String& detail) {
-  const int centerX = M5.Display.width() / 2;
-  const int centerY = M5.Display.height() / 2;
-  M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.setTextDatum(middle_center);
-  M5.Display.setFont(&fonts::efontCN_24_b);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.drawString(title, centerX, centerY - 16);
-  M5.Display.setFont(&fonts::efontCN_16);
-  M5.Display.setTextColor(M5.Display.color565(150, 150, 150), TFT_BLACK);
-  M5.Display.drawString(detail, centerX, centerY + 24);
-  M5.Display.setTextDatum(top_left);
-}
-
-bool publicImageDimensions(const uint8_t* data, size_t length,
-                           uint32_t& width, uint32_t& height) {
-  width = 0;
-  height = 0;
-  if (length >= 24 && data[0] == 0x89 && data[1] == 'P' &&
-      data[2] == 'N' && data[3] == 'G') {
-    width = (static_cast<uint32_t>(data[16]) << 24) |
-            (static_cast<uint32_t>(data[17]) << 16) |
-            (static_cast<uint32_t>(data[18]) << 8) | data[19];
-    height = (static_cast<uint32_t>(data[20]) << 24) |
-             (static_cast<uint32_t>(data[21]) << 16) |
-             (static_cast<uint32_t>(data[22]) << 8) | data[23];
-    return width > 0 && height > 0;
-  }
-  if (length < 4 || data[0] != 0xFF || data[1] != 0xD8) return false;
-  size_t offset = 2;
-  while (offset + 8 < length) {
-    if (data[offset] != 0xFF) {
-      ++offset;
-      continue;
-    }
-    while (offset < length && data[offset] == 0xFF) ++offset;
-    if (offset >= length) break;
-    const uint8_t marker = data[offset++];
-    if (marker == 0xD8 || marker == 0xD9 ||
-        (marker >= 0xD0 && marker <= 0xD7)) {
-      continue;
-    }
-    if (offset + 1 >= length) break;
-    const uint16_t segmentLength =
-        (static_cast<uint16_t>(data[offset]) << 8) | data[offset + 1];
-    if (segmentLength < 2 || offset + segmentLength > length) break;
-    const bool startOfFrame =
-        (marker >= 0xC0 && marker <= 0xC3) ||
-        (marker >= 0xC5 && marker <= 0xC7) ||
-        (marker >= 0xC9 && marker <= 0xCB) ||
-        (marker >= 0xCD && marker <= 0xCF);
-    if (startOfFrame && segmentLength >= 7) {
-      height = (static_cast<uint16_t>(data[offset + 3]) << 8) |
-               data[offset + 4];
-      width = (static_cast<uint16_t>(data[offset + 5]) << 8) |
-              data[offset + 6];
-      return width > 0 && height > 0;
-    }
-    offset += segmentLength;
-  }
-  return false;
-}
-
-void drawPublicImagePage() {
-  const uint8_t* data = publicReader.imageData();
-  const size_t length = publicReader.imageLength();
-  const int screenWidth = M5.Display.width();
-  const int screenHeight = M5.Display.height();
-  M5.Display.fillScreen(TFT_BLACK);
-
-  bool drawn = false;
-  uint32_t imageWidth = 0;
-  uint32_t imageHeight = 0;
-  if (data && publicImageDimensions(data, length, imageWidth, imageHeight)) {
-    const float scale = std::min(
-        1.0f, std::min((screenWidth - 28.0f) / imageWidth,
-                       (screenHeight - 28.0f) / imageHeight));
-    if (publicReader.imageIsPng()) {
-      drawn = M5.Display.drawPng(data, length, screenWidth / 2,
-                                 screenHeight / 2, 0, 0, 0, 0, scale, 0.0f,
-                                 middle_center);
-    } else {
-      drawn = M5.Display.drawJpg(data, length, screenWidth / 2,
-                                 screenHeight / 2, 0, 0, 0, 0, scale, 0.0f,
-                                 middle_center);
-    }
-  }
-  if (!drawn) {
-    publicImageError = "图片解码失败";
-    drawPublicReadingMessage("图片暂不可用", "轻按翻页，长按 B 退出");
-    Serial.println("Public reading image decode failed");
-  } else {
-    Serial.printf("Public reading image displayed: width=%u height=%u\n",
-                  static_cast<unsigned>(imageWidth),
-                  static_cast<unsigned>(imageHeight));
-  }
-
-  M5.Display.setFont(&fonts::efontCN_16);
-  M5.Display.setTextDatum(middle_center);
-  const String page = String(publicBlockIndex + 1) + "/" +
-                      String(publicReader.blockCount());
-  const int labelWidth = M5.Display.textWidth(page) + 18;
-  M5.Display.fillRoundRect((screenWidth - labelWidth) / 2,
-                           screenHeight - 35, labelWidth, 25, 12, TFT_BLACK);
-  M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
-  M5.Display.drawString(page, screenWidth / 2, screenHeight - 23);
-  M5.Display.setTextDatum(top_left);
-}
-
-void finishPublicReadingFromBlack(uint32_t nowMs) {
-  if (localDocumentActive && avatar.narrativeTextActive()) {
+void finishLocalReadingFromBlack(uint32_t nowMs) {
+  if (localReadingActive && avatar.narrativeTextActive()) {
     settings.localPage = avatar.narrativePageIndex();
     saveLocalReadingProgress();
   }
-  publicDocumentActive = false;
-  localDocumentActive = false;
-  publicImageMode = false;
-  publicImageFading = false;
-  publicImageExitAfterFade = false;
-  publicImageRetreatAfterFade = false;
-  publicAdvancePending = false;
-  publicRetreatPending = false;
-  publicImageBPressTracking = false;
-  publicImageBLongTriggered = false;
-  publicImageError = "";
-  publicReader.clear();
+  localReadingActive = false;
+  readingAdvancePending = false;
+  readingRetreatPending = false;
+  readingDocument.clear();
   avatar.restoreExpressionFromBlack(nowMs);
   startVibration(55, 18);
   playUiSound(UiSound::Close);
-  Serial.println("Public reading closed; expression restoring");
+  Serial.println("Local reading closed; expression restoring");
 }
 
-bool startPublicBlock(uint8_t index, uint32_t nowMs, bool openLastPage) {
-  if (!publicDocumentActive || publicReader.blockCount() == 0) return false;
-  publicBlockIndex = index % publicReader.blockCount();
-  publicAdvancePending = false;
-  publicRetreatPending = false;
-  publicImageError = "";
-  const ReadingBlock& block = publicReader.block(publicBlockIndex);
+bool startLocalBlock(uint8_t index, uint32_t nowMs, bool openLastPage) {
+  if (!localReadingActive || readingDocument.blockCount() == 0) return false;
+  readingBlockIndex = index % readingDocument.blockCount();
+  readingAdvancePending = false;
+  readingRetreatPending = false;
+  const ReadingBlock& block = readingDocument.block(readingBlockIndex);
   uint16_t initialPage = 0;
-  if (localDocumentActive) {
-    if (settings.localBlock != publicBlockIndex) {
-      settings.localBlock = publicBlockIndex;
-      settings.localPage = 0;
-      saveLocalReadingProgress();
-    }
-    initialPage = openLastPage ? UINT16_MAX : settings.localPage;
-  } else if (openLastPage) {
-    initialPage = UINT16_MAX;
+  if (settings.localBlock != readingBlockIndex) {
+    settings.localBlock = readingBlockIndex;
+    settings.localPage = 0;
+    saveLocalReadingProgress();
   }
-  if (block.type == ReadingBlockType::Text) {
-    publicImageMode = false;
-    publicReader.releaseImage();
-    avatar.cancelNarrativeText();
-    const bool started =
-        beginNarrativeText(block.content, nowMs, true, initialPage);
-    if (started && localDocumentActive && openLastPage) {
-      settings.localPage = avatar.narrativePageIndex();
-      saveLocalReadingProgress();
-    }
-    if (!started) finishPublicReadingFromBlack(nowMs);
-    return started;
-  }
-
+  initialPage = openLastPage ? UINT16_MAX : settings.localPage;
   avatar.cancelNarrativeText();
-  publicImageMode = true;
-  publicImageFading = false;
-  publicImageRetreatAfterFade = false;
-  publicImageBPressTracking = false;
-  publicImageBLongTriggered = false;
-  drawPublicReadingMessage("正在加载图片", String(publicBlockIndex + 1) + "/" +
-                                             String(publicReader.blockCount()));
-  String error;
-  if (!publicReader.downloadImage(publicBlockIndex, error)) {
-    publicImageError = error;
-    drawPublicReadingMessage("图片加载失败", error);
-  } else {
-    drawPublicImagePage();
+  const bool started =
+      beginNarrativeText(block.content, nowMs, true, initialPage);
+  if (started && openLastPage) {
+    settings.localPage = avatar.narrativePageIndex();
+    saveLocalReadingProgress();
   }
-  startVibration(45, 16);
-  return true;
+  if (!started) finishLocalReadingFromBlack(nowMs);
+  return started;
 }
 
 bool startLocalChapter(uint32_t nowMs) {
@@ -1232,7 +1025,7 @@ bool startLocalChapter(uint32_t nowMs) {
       modeMenuChapterIndex, localLibrary.chapterCount() - 1);
   const bool resume = chapter == settings.localChapter;
   String error;
-  if (!localLibrary.loadChapter(chapter, publicReader, error)) {
+  if (!localLibrary.loadChapter(chapter, readingDocument, error)) {
     avatar.setModeMenuContent("内置书架", "章节读取失败", error);
     Serial.printf("Local chapter rejected: %s\n", error.c_str());
     return false;
@@ -1241,17 +1034,16 @@ bool startLocalChapter(uint32_t nowMs) {
   settings.localChapter = chapter;
   settings.localBlock = resume ? settings.localBlock : 0;
   settings.localPage = resume ? settings.localPage : 0;
-  if (settings.localBlock >= publicReader.blockCount()) {
+  if (settings.localBlock >= readingDocument.blockCount()) {
     settings.localBlock = 0;
     settings.localPage = 0;
   }
   saveLocalReadingProgress();
   cancelModeMenuImmediate();
-  publicDocumentActive = true;
-  localDocumentActive = true;
-  publicBlockIndex = settings.localBlock;
+  localReadingActive = true;
+  readingBlockIndex = settings.localBlock;
   M5.Display.fillScreen(TFT_BLACK);
-  const bool started = startPublicBlock(publicBlockIndex, nowMs);
+  const bool started = startLocalBlock(readingBlockIndex, nowMs);
   if (started) {
     Serial.printf("Local reading started: chapter=%u block=%u page=%u\n",
                   static_cast<unsigned>(settings.localChapter + 1),
@@ -1261,28 +1053,24 @@ bool startLocalChapter(uint32_t nowMs) {
   return started;
 }
 
-void advancePublicBlock(uint32_t nowMs) {
-  if (!publicDocumentActive || publicReader.blockCount() == 0) return;
-  if (!localDocumentActive) {
-    startPublicBlock((publicBlockIndex + 1) % publicReader.blockCount(), nowMs);
-    return;
-  }
+void advanceLocalBlock(uint32_t nowMs) {
+  if (!localReadingActive || readingDocument.blockCount() == 0) return;
 
-  const uint8_t nextBlock = publicBlockIndex + 1;
-  if (nextBlock < publicReader.blockCount()) {
+  const uint8_t nextBlock = readingBlockIndex + 1;
+  if (nextBlock < readingDocument.blockCount()) {
     settings.localBlock = nextBlock;
     settings.localPage = 0;
     saveLocalReadingProgress();
-    startPublicBlock(nextBlock, nowMs);
+    startLocalBlock(nextBlock, nowMs);
     return;
   }
 
   const uint8_t nextChapter =
       (settings.localChapter + 1) % localLibrary.chapterCount();
   String error;
-  if (!localLibrary.loadChapter(nextChapter, publicReader, error)) {
+  if (!localLibrary.loadChapter(nextChapter, readingDocument, error)) {
     Serial.printf("Local next chapter failed: %s\n", error.c_str());
-    finishPublicReadingFromBlack(nowMs);
+    finishLocalReadingFromBlack(nowMs);
     return;
   }
   settings.localChapter = nextChapter;
@@ -1290,26 +1078,19 @@ void advancePublicBlock(uint32_t nowMs) {
   settings.localPage = 0;
   modeMenuChapterIndex = nextChapter;
   saveLocalReadingProgress();
-  startPublicBlock(0, nowMs);
+  startLocalBlock(0, nowMs);
   Serial.printf("Local reading advanced: chapter=%u\n",
                 static_cast<unsigned>(nextChapter + 1));
 }
 
-void retreatPublicBlock(uint32_t nowMs) {
-  if (!publicDocumentActive || publicReader.blockCount() == 0) return;
-  if (publicBlockIndex > 0) {
-    const uint8_t previousBlock = publicBlockIndex - 1;
-    if (localDocumentActive) {
-      settings.localBlock = previousBlock;
-      settings.localPage = 0;
-      saveLocalReadingProgress();
-    }
-    startPublicBlock(previousBlock, nowMs, true);
-    return;
-  }
-
-  if (!localDocumentActive) {
-    startPublicBlock(publicReader.blockCount() - 1, nowMs, true);
+void retreatLocalBlock(uint32_t nowMs) {
+  if (!localReadingActive || readingDocument.blockCount() == 0) return;
+  if (readingBlockIndex > 0) {
+    const uint8_t previousBlock = readingBlockIndex - 1;
+    settings.localBlock = previousBlock;
+    settings.localPage = 0;
+    saveLocalReadingProgress();
+    startLocalBlock(previousBlock, nowMs, true);
     return;
   }
 
@@ -1317,116 +1098,20 @@ void retreatPublicBlock(uint32_t nowMs) {
       (settings.localChapter + localLibrary.chapterCount() - 1) %
       localLibrary.chapterCount();
   String error;
-  if (!localLibrary.loadChapter(previousChapter, publicReader, error)) {
+  if (!localLibrary.loadChapter(previousChapter, readingDocument, error)) {
     Serial.printf("Local previous chapter failed: %s\n", error.c_str());
-    finishPublicReadingFromBlack(nowMs);
+    finishLocalReadingFromBlack(nowMs);
     return;
   }
   settings.localChapter = previousChapter;
-  settings.localBlock = publicReader.blockCount() - 1;
+  settings.localBlock = readingDocument.blockCount() - 1;
   settings.localPage = 0;
   modeMenuChapterIndex = previousChapter;
   saveLocalReadingProgress();
-  startPublicBlock(settings.localBlock, nowMs, true);
+  startLocalBlock(settings.localBlock, nowMs, true);
   Serial.printf("Local reading retreated: chapter=%u block=%u\n",
                 static_cast<unsigned>(previousChapter + 1),
                 static_cast<unsigned>(settings.localBlock + 1));
-}
-
-void updatePublicReadingSource(uint32_t nowMs) {
-  if (!publicFetchRequested) return;
-  publicFetchRequested = false;
-  if (!modeMenuMode || !wifiPairing.connected() ||
-      settings.readingSourceUrl.isEmpty()) {
-    refreshModeMenuContent();
-    return;
-  }
-  String error;
-  if (!publicReader.fetchDocument(settings.readingSourceUrl, error)) {
-    avatar.setModeMenuContent("阅读模式", "更新失败", error);
-    startVibration(80, 65);
-    playUiSound(UiSound::Warning);
-    Serial.println("Public reading manifest rejected");
-    return;
-  }
-
-  cancelModeMenuImmediate();
-  publicDocumentActive = true;
-  localDocumentActive = false;
-  publicBlockIndex = 0;
-  M5.Display.fillScreen(TFT_BLACK);
-  startPublicBlock(0, nowMs);
-  Serial.println("Public reading started");
-}
-
-void beginPublicImageFade(uint32_t nowMs, bool exitAfterFade,
-                          bool retreatAfterFade = false) {
-  if (!publicImageMode || publicImageFading) return;
-  publicImageFading = true;
-  publicImageExitAfterFade = exitAfterFade;
-  publicImageRetreatAfterFade = retreatAfterFade;
-  publicImageFadeStartedMs = nowMs;
-}
-
-void handlePublicImageInput(uint32_t nowMs) {
-  if (!publicImageMode) return;
-  const auto touch = M5.Touch.getDetail(0);
-  if (M5.BtnB.wasPressed()) {
-    publicImageBPressTracking = true;
-    publicImageBLongTriggered = false;
-    publicImageBPressedAtMs = nowMs;
-    noteActivity(nowMs);
-  }
-  if (publicImageBPressTracking && !publicImageBLongTriggered &&
-      M5.BtnB.isPressed() &&
-      nowMs - publicImageBPressedAtMs >= kNarrativeDismissHoldMs) {
-    publicImageBLongTriggered = true;
-    modeMenuOpenInputArmed = false;
-    beginPublicImageFade(nowMs, true);
-    startVibration(75, 24);
-    playUiSound(UiSound::Close);
-    return;
-  }
-  const bool bReleased = M5.BtnB.wasReleased();
-  const bool bShortPress = bReleased && publicImageBPressTracking &&
-                           !publicImageBLongTriggered;
-  if (bReleased) {
-    publicImageBPressTracking = false;
-    publicImageBLongTriggered = false;
-    publicImageBPressedAtMs = 0;
-  }
-  const bool aShortPress = M5.BtnA.wasClicked();
-  if (!publicImageFading &&
-      (aShortPress || bShortPress || touch.wasClicked())) {
-    noteActivity(nowMs);
-    beginPublicImageFade(nowMs, false, aShortPress);
-    startVibration(45, 16);
-    playUiSound(aShortPress ? UiSound::Previous : UiSound::Next);
-  }
-}
-
-void updatePublicImage(uint32_t nowMs) {
-  if (!publicImageMode || !publicImageFading) return;
-  const uint32_t elapsed = nowMs - publicImageFadeStartedMs;
-  const int width = M5.Display.width();
-  const int eraseWidth = std::min<int>(
-      width, static_cast<int>((static_cast<uint64_t>(width) * elapsed) /
-                              kReadingImageFadeMs));
-  const int eraseX = publicImageRetreatAfterFade ? width - eraseWidth : 0;
-  M5.Display.fillRect(eraseX, 0, eraseWidth, M5.Display.height(), TFT_BLACK);
-  if (elapsed < kReadingImageFadeMs) return;
-  M5.Display.fillScreen(TFT_BLACK);
-  if (publicImageExitAfterFade) {
-    finishPublicReadingFromBlack(nowMs);
-  } else {
-    publicImageMode = false;
-    publicImageFading = false;
-    if (publicImageRetreatAfterFade) {
-      retreatPublicBlock(nowMs);
-    } else {
-      advancePublicBlock(nowMs);
-    }
-  }
 }
 
 void updateBirthdayEasterEgg(uint32_t nowMs) {
@@ -2142,7 +1827,7 @@ void updateCompanionSensors(uint32_t nowMs) {
                     charging ? "connected" : "disconnected");
       if (!diagnosticMode && !statusMode && !eyeMessageMode && !wifiMode &&
           !eyeMenuMode && !modeMenuMode && !avatar.modeMenuActive() &&
-          !avatar.narrativeTextActive() && !publicImageMode &&
+          !avatar.narrativeTextActive() &&
           screenPowerState != ScreenPowerState::Sleeping) {
         trigger(charging ? ExpressionId::Excited : ExpressionId::Curious,
                 nowMs, 220);
@@ -2155,7 +1840,6 @@ void updateCompanionSensors(uint32_t nowMs) {
   if (lowBattery && !diagnosticMode && !statusMode && !eyeMessageMode &&
       !wifiMode && !eyeMenuMode && !modeMenuMode &&
       !avatar.modeMenuActive() && !avatar.narrativeTextActive() &&
-      !publicImageMode &&
       screenPowerState != ScreenPowerState::Sleeping &&
       (lastLowBatteryReminderMs == 0 ||
        nowMs - lastLowBatteryReminderMs >= kLowBatteryReminderIntervalMs)) {
@@ -2172,7 +1856,7 @@ void updateDisplayPower(uint32_t nowMs) {
     return;
   }
   if (diagnosticMode || statusMode || eyeMessageMode ||
-      avatar.narrativeTextActive() || publicImageMode) {
+      avatar.narrativeTextActive()) {
     return;
   }
   const uint32_t inactiveMs = nowMs - lastActivityMs;
@@ -2357,47 +2041,12 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
     startLocalChapter(nowMs);
     return true;
   }
-  if (command == "read source") {
-    Serial.printf("Public reading source: %s\n",
-                  settings.readingSourceUrl.isEmpty() ? "not configured"
-                                                       : "configured");
-    return true;
-  }
-  if (command == "read fetch") {
-    if (settings.readingSourceUrl.isEmpty()) {
-      Serial.println("Public reading source is not configured");
-      return true;
-    }
-    if (!wifiPairing.connected()) {
-      Serial.println("Public reading fetch requires Wi-Fi");
-      return true;
-    }
-    if (!narrativeTextAvailable()) {
-      Serial.println("Public reading fetch unavailable while UI is busy");
-      return true;
-    }
-    String error;
-    if (!publicReader.fetchDocument(settings.readingSourceUrl, error)) {
-      Serial.printf("Public reading fetch rejected: %s\n", error.c_str());
-      return true;
-    }
-    publicDocumentActive = true;
-    localDocumentActive = false;
-    publicBlockIndex = 0;
-    M5.Display.fillScreen(TFT_BLACK);
-    startPublicBlock(0, nowMs);
-    Serial.println("Public reading started from serial command");
-    return true;
-  }
   if (command == "read next") {
-    if (!publicDocumentActive) {
-      Serial.println("Public reading is not active");
-    } else if (publicImageMode) {
-      beginPublicImageFade(nowMs, false);
-      Serial.println("Public reading image advancing");
+    if (!localReadingActive) {
+      Serial.println("Local reading is not active");
     } else if (avatar.narrativeHoldingLastPage()) {
-      publicAdvancePending = true;
-      publicRetreatPending = false;
+      readingAdvancePending = true;
+      readingRetreatPending = false;
       avatar.advanceNarrativeTextToBlack(nowMs);
     } else {
       avatar.advanceNarrativeText(nowMs);
@@ -2405,35 +2054,27 @@ bool handleCompanionCommand(const String& rawCommand, uint32_t nowMs) {
     return true;
   }
   if (command == "read previous") {
-    if (!publicDocumentActive) {
-      Serial.println("Public reading is not active");
-    } else if (publicImageMode) {
-      beginPublicImageFade(nowMs, false, true);
-      Serial.println("Public reading image retreating");
+    if (!localReadingActive) {
+      Serial.println("Local reading is not active");
     } else if (avatar.narrativePageIndex() > 0) {
       avatar.retreatNarrativeText(nowMs);
     } else {
-      publicRetreatPending = true;
-      publicAdvancePending = false;
+      readingRetreatPending = true;
+      readingAdvancePending = false;
       avatar.advanceNarrativeTextToBlack(nowMs, true);
     }
     return true;
   }
   if (command == "read close") {
-    if (!publicDocumentActive) {
-      Serial.println("Public reading is not active");
-    } else if (publicImageMode) {
-      beginPublicImageFade(nowMs, true);
+    if (!localReadingActive) {
+      Serial.println("Local reading is not active");
     } else {
-      if (localDocumentActive) {
-        settings.localPage = avatar.narrativePageIndex();
-        saveLocalReadingProgress();
-      }
-      publicDocumentActive = false;
-      localDocumentActive = false;
-      publicAdvancePending = false;
-      publicRetreatPending = false;
-      publicReader.clear();
+      settings.localPage = avatar.narrativePageIndex();
+      saveLocalReadingProgress();
+      localReadingActive = false;
+      readingAdvancePending = false;
+      readingRetreatPending = false;
+      readingDocument.clear();
       avatar.dismissNarrativeText(nowMs);
     }
     return true;
@@ -2941,16 +2582,13 @@ void handleNarrativeTextInput(uint32_t nowMs) {
     // if the eye-opening transition finishes while the button is still down.
     modeMenuOpenInputArmed = false;
     noteActivity(nowMs);
-    if (publicDocumentActive) {
-      if (localDocumentActive) {
-        settings.localPage = avatar.narrativePageIndex();
-        saveLocalReadingProgress();
-      }
-      publicDocumentActive = false;
-      localDocumentActive = false;
-      publicAdvancePending = false;
-      publicRetreatPending = false;
-      publicReader.clear();
+    if (localReadingActive) {
+      settings.localPage = avatar.narrativePageIndex();
+      saveLocalReadingProgress();
+      localReadingActive = false;
+      readingAdvancePending = false;
+      readingRetreatPending = false;
+      readingDocument.clear();
     }
     avatar.dismissNarrativeText(nowMs);
     startVibration(75, 24);
@@ -2974,9 +2612,9 @@ void handleNarrativeTextInput(uint32_t nowMs) {
     noteActivity(nowMs);
     if (avatar.narrativePageIndex() > 0) {
       avatar.retreatNarrativeText(nowMs);
-    } else if (publicDocumentActive) {
-      publicRetreatPending = true;
-      publicAdvancePending = false;
+    } else if (localReadingActive) {
+      readingRetreatPending = true;
+      readingAdvancePending = false;
       avatar.advanceNarrativeTextToBlack(nowMs, true);
     } else {
       Serial.println("Narrative input: A short press, already at first page");
@@ -2988,9 +2626,9 @@ void handleNarrativeTextInput(uint32_t nowMs) {
 
   if (bShortPress || touch.wasClicked()) {
     noteActivity(nowMs);
-    if (publicDocumentActive && avatar.narrativeHoldingLastPage()) {
-      publicAdvancePending = true;
-      publicRetreatPending = false;
+    if (localReadingActive && avatar.narrativeHoldingLastPage()) {
+      readingAdvancePending = true;
+      readingRetreatPending = false;
       avatar.advanceNarrativeTextToBlack(nowMs);
     } else {
       avatar.advanceNarrativeText(nowMs);
@@ -3003,16 +2641,15 @@ void handleNarrativeTextInput(uint32_t nowMs) {
 }
 
 void syncLocalReadingProgress() {
-  if (!localDocumentActive || !publicDocumentActive ||
-      !avatar.narrativeTextActive()) {
+  if (!localReadingActive || !avatar.narrativeTextActive()) {
     return;
   }
   const uint16_t page = avatar.narrativePageIndex();
-  if (settings.localBlock == publicBlockIndex &&
+  if (settings.localBlock == readingBlockIndex &&
       settings.localPage == page) {
     return;
   }
-  settings.localBlock = publicBlockIndex;
+  settings.localBlock = readingBlockIndex;
   settings.localPage = page;
   saveLocalReadingProgress();
   Serial.printf("Local reading progress saved: chapter=%u block=%u page=%u/%u\n",
@@ -3042,7 +2679,6 @@ void setup() {
     }
     modeMenuChapterIndex = settings.localChapter;
   }
-  readingService.setSourceUrl(settings.readingSourceUrl);
   const bool soundReady = uiSounds.begin(settings.soundVolume);
 
   M5.Display.setRotation(0);
@@ -3075,9 +2711,9 @@ void setup() {
   Serial.println(
       "Hold A: eye menu; swipe down: battery; Wi-Fi page hold A: manage saved networks; B: back");
   Serial.println(
-      "Hold B: mode menu; reading/source page: http://<device-ip>/read");
+      "Hold B: mode menu; LAN delivery page: http://<device-ip>/read");
   Serial.println(
-      "Reading diagnostics: read library|local [chapter]|source|fetch|next|previous|close");
+      "Reading diagnostics: read library|local [chapter]|next|previous|close");
   Serial.println("Sound test: sound");
   Serial.println("Full-screen typewriter: say <UTF-8 text>");
   Serial.println(
@@ -3110,26 +2746,22 @@ void loop() {
   updateWifiPairing(nowMs);
   updateReadingService(nowMs);
   updateNetworkTime(nowMs);
-  updatePublicReadingSource(nowMs);
   updateCompanionSensors(nowMs);
   handleSerialCommands(nowMs);
 
   if (diagnosticMode) {
     handleDiagnosticInput(nowMs);
-  } else if (publicImageMode) {
-    handlePublicImageInput(nowMs);
-    updatePublicImage(nowMs);
   } else if (avatar.narrativeTextActive()) {
     handleNarrativeTextInput(nowMs);
     const bool wasActive = avatar.narrativeTextActive();
     avatar.update(nowMs);
     syncLocalReadingProgress();
-    if (publicRetreatPending && avatar.narrativeReadyForNextBlock()) {
+    if (readingRetreatPending && avatar.narrativeReadyForNextBlock()) {
       avatar.cancelNarrativeText();
-      retreatPublicBlock(nowMs);
-    } else if (publicAdvancePending && avatar.narrativeReadyForNextBlock()) {
+      retreatLocalBlock(nowMs);
+    } else if (readingAdvancePending && avatar.narrativeReadyForNextBlock()) {
       avatar.cancelNarrativeText();
-      advancePublicBlock(nowMs);
+      advanceLocalBlock(nowMs);
     } else if (wasActive && !avatar.narrativeTextActive()) {
       startVibration(55, 18);
       playUiSound(UiSound::Close);

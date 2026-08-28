@@ -13,9 +13,9 @@ KK is a procedural avatar built for the M5Stack StopWatch's circular AMOLED disp
 
 ## Current firmware
 
-The current firmware version is **0.12.3**. Reading mode includes an on-device bookshelf alongside the existing public HTTPS source. The bundled Chinese novel *Zero Lamp* is split into 42 validated reading units, and KK persists the current chapter, content block and page in NVS. Direction controls are now consistent at both levels: A selects the previous chapter/page and B selects the next chapter/page. The B-release isolation introduced in 0.12.2 remains in place, so dismissing reading cannot reopen the mode menu with the same hold.
+The current firmware version is **0.13.0**. Reading mode now has two deliberately local paths: the on-device bookshelf and one-time text delivery from the trusted LAN. The public HTTPS book-source, remote image download, CA bundle and source-URL storage have been removed. The bundled Chinese novel *Zero Lamp* remains split into 42 validated reading units, with chapter, content-block and page progress persisted in NVS. A selects the previous chapter/page and B selects the next chapter/page.
 
-Version 0.12.3 was built and flashed to real M5Stack StopWatch hardware with the existing 42-entry SPIFFS library retained. The previous 0.12.2 run confirmed B advancing pages, A returning from `9/22` to `8/22`, and a 1,507 ms B hold dismissing reading without reopening the mode menu. The new chapter-order mapping compiles and runs on-device; its final button feel and public-image backward navigation still need user-facing physical acceptance.
+Version 0.13.0 was built and flashed to real M5Stack StopWatch hardware together with a regenerated SPIFFS image. The device reported version 0.13.0, reconnected to its saved Wi-Fi, mounted all 42 library entries, advanced from chapter 1 to chapter 2 and returned to chapter 1. The LAN `/read` page returned 200 without the former public-source controls, while `/api/source` returned 404. Stable expression windows remained around 59.3–59.7 fps with 100% TE synchronization and zero frame timeouts.
 
 ## Highlights
 
@@ -28,7 +28,7 @@ Version 0.12.3 was built and flashed to real M5Stack StopWatch hardware with the
 - original soft pop, boop and blip effects are synthesized for expressions, navigation, energy status, brightness and wake events, with automatic quiet-hours muting;
 - double-click A+B together to reveal the hidden birthday greeting arranged vertically inside both eyes, or hold A+B to enter hardware diagnostics;
 - show long UTF-8 content as full-screen, six-line pages with a Unicode-aware typewriter effect and a procedural transition back to the previous expression;
-- hold B to close the current expression into a separate mode menu, then choose the on-device bookshelf or public reading and return smoothly to the expression;
+- hold B to close the current expression into a separate mode menu, then choose the on-device bookshelf or trusted-LAN text delivery and return smoothly to the expression;
 - read the bundled 42-entry *Zero Lamp* library without Wi-Fi, with automatic next-chapter flow and NVS-backed chapter/block/page resume;
 - store up to five Wi-Fi profiles, manage them from the captive portal, and select the strongest visible saved network automatically;
 - hold A to open a minimal menu made entirely from KK's eyes; inside the menu, click A to browse brightness, sound, motion sensitivity, scheduled quiet mute, network and firmware version, double-click A to confirm, and press B to go back. Short A/B presses on the normal face do not select expressions; swipe down to check battery, while eye opening directly conveys the selected levels;
@@ -63,9 +63,9 @@ The display gestures and the physical A/B buttons have separate roles. Short A/B
 | Current mode | A | B | A+B |
 | --- | --- | --- | --- |
 | Normal face | Hold for about 800 ms to open the eye menu; a short press does nothing | Hold for about 800 ms to open the mode menu; a short press does nothing | Double-click both together for the vertical birthday greeting; hold both for about one second to enter diagnostics |
-| Reading source menu | Single-click to switch between on-device and public sources; double-click to enter | Close the menu and restore the previous face | Hold both for about one second to enter diagnostics |
+| Reading source menu | Single-click to switch between the on-device bookshelf and LAN delivery; double-click to enter | Close the menu and restore the previous face | Hold both for about one second to enter diagnostics |
 | On-device chapter menu | Single-click for the previous chapter; double-click to read/resume | Single-click for the next chapter; hold to return to reading sources | — |
-| Public source page | Fetch/read the configured source or wait for LAN delivery | Return to reading sources; hold to close | — |
+| LAN delivery page | Start queued text or wait for a trusted-LAN sender | Return to reading sources; hold to close | — |
 | Root eye menu | Single-click to move to the next item; double-click to open the selected item | Close the menu and restore the previous face | — |
 | Brightness page | Single-click to cycle through four levels | Return to the root menu | — |
 | Sound page | Single-click to cycle through mute plus four volume levels | Return to the root menu | — |
@@ -75,7 +75,6 @@ The display gestures and the physical A/B buttons have separate roles. Short A/B
 | Version page | Read-only; a click only gives haptic feedback | Return to the root menu | — |
 | Battery view | No setting action | Close early | — |
 | Full-screen narrative text | Previous page or content block | Reveal/next page or block; hold to dismiss | Hold both for about one second to enter diagnostics |
-| Public image page | Previous content block | Next content block; hold to dismiss | — |
 | Diagnostics | Test vibration | Redraw the diagnostic screen | Hold both for about one second to return to the face |
 
 A single A click in the root menu is committed after the 420 ms double-click window. This small delay lets a second click open the current item instead of advancing it. Touch remains available inside eye-menu pages for gaze following, but it does not alter settings.
@@ -89,7 +88,7 @@ The menu stays within KK's expression: the item name is drawn in the left eye an
 3. **Motion sensitivity (`3/6`)** — A cycles `low`, `medium` and `high`, shown as `低`, `中` or `高` in the right eye. The saved profile controls tilt and quick-movement response; the screen-wake threshold remains conservative and unchanged.
 4. **Scheduled quiet (`4/6`)** — A toggles the saved `22:00–07:00` sound mute. It is disabled by default and affects sound only; the RTC-driven sleepy night expression remains independent.
 5. **Network (`5/6`)** — Hold A for about 1.8 seconds to start the temporary `KK-XXXX` access point. The captive portal lists saved networks and lets you add/update or delete them, up to five profiles. New credentials are saved only after a successful connection; passwords are never echoed. During normal startup or recovery KK scans and selects the strongest visible saved profile.
-6. **Version (`6/6`)** — Displays firmware version `0.12.3`; it does not change a setting.
+6. **Version (`6/6`)** — Displays firmware version `0.13.0`; it does not change a setting.
 
 ### Battery, automatic reactions and screen power
 
@@ -100,13 +99,13 @@ The menu stays within KK's expression: the item name is drawn in the left eye an
 - Touch, either physical button or confirmed device movement wakes the display. The eye menu, battery view and diagnostics stay awake while in use.
 - In the configured night window, entering the dim state may use the sleepy expression. The eye-menu scheduled-mute switch controls only sound during that window and is off by default.
 
-### On-device library, network reading and full-screen narrative text
+### On-device library, LAN delivery and full-screen narrative text
 
-Hold B on the normal face. In Reading mode, single-click A to switch between the on-device bookshelf and the public source, then double-click A to enter. The bundled *Zero Lamp* library works offline. Inside its chapter list, single-click A moves to the previous chapter, single-click B moves to the next chapter, and double-click A reads or resumes; holding B returns to the source list. KK saves the chapter, content block and page, advances to the next chapter after the current unit, and resumes at the saved page after leaving or rebooting.
+Hold B on the normal face. In Reading mode, single-click A to switch between the on-device bookshelf and LAN delivery, then double-click A to enter. The bundled *Zero Lamp* library works offline. Inside its chapter list, single-click A moves to the previous chapter, single-click B moves to the next chapter, and double-click A reads or resumes; holding B returns to the source list. KK saves the chapter, content block and page, advances to the next chapter after the current unit, and resumes at the saved page after leaving or rebooting.
 
-After KK connects to Wi-Fi, open `http://<device-ip>/read` from another device on the same local network. You can still send one volatile article, or save the public HTTPS URL of a `KKREAD/1` manifest. Hold B and press A in Reading mode to let KK fetch that source itself. The local configuration endpoint has no authentication, so use it only on a trusted LAN and never expose port 80; remote manifests and image blocks are fetched with certificate-validated HTTPS.
+After KK connects to Wi-Fi, open `http://<device-ip>/read` from another device on the same local network. Paste one temporary article, enter LAN delivery on KK, and send it. The endpoint has no authentication, so use it only on a trusted LAN and never expose port 80. The text is volatile and is not restored after reboot.
 
-One manifest may contain up to 12 ordered blocks. Text blocks keep the 1,800-character/96-line limits and the existing typewriter renderer. Image blocks must be absolute HTTPS JPEG/PNG URLs and are capped at 768 KiB; they are aspect-fitted onto the black round display. A moves to the previous page or block, short B moves forward, and a display tap reveals or advances; holding B for 1.5 seconds exits. Backward navigation crosses content-block and local-chapter boundaries and opens the last page of the preceding text block. See [`docs/READING_SOURCES.md`](docs/READING_SOURCES.md) for the format.
+LAN delivery accepts valid UTF-8 text up to 1,800 characters and 96 explicit lines. A moves to the previous page or local content block, short B moves forward, and a display tap reveals or advances; holding B for 1.5 seconds exits. Backward navigation in the bundled library crosses content-block and chapter boundaries and opens the last page of the preceding block.
 
 Send `say <UTF-8 text>` over the serial monitor to enter narrative mode. The command preserves the message's original case, supports Chinese and explicit newlines, and accepts up to 768 bytes from the serial boundary. The renderer wraps by Unicode character into the circular screen's central safe area, uses at most six lines per page, and automatically creates additional pages.
 
@@ -178,7 +177,7 @@ screen off
 say 小谷宝贝，今天也要好好休息。
 ```
 
-Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight saving). KK synchronizes after Wi-Fi connects, retries after one minute on failure, and rewrites the RTC every six hours. Brightness, motion sensitivity, timeouts, quiet settings, up to five Wi-Fi profiles and the public reading-source URL persist in NVS. The temporary `KK-XXXX` portal runs for at most five minutes and never echoes or logs router passwords; a candidate is saved only after a successful connection.
+Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight saving). KK synchronizes after Wi-Fi connects, retries after one minute on failure, and rewrites the RTC every six hours. Brightness, motion sensitivity, timeouts, quiet settings, local reading progress and up to five Wi-Fi profiles persist in NVS. The temporary `KK-XXXX` portal runs for at most five minutes and never echoes or logs router passwords; a candidate is saved only after a successful connection.
 
 ## Repository map
 
@@ -187,8 +186,8 @@ Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight sav
 | `src/avatar_engine.*` | Expression catalogue, timelines, easing, drawing and interaction physics |
 | `src/main.cpp` | Device setup, touch/IMU/buttons, vibration, diagnostics and serial commands |
 | `src/wifi_pairing.*` | Non-blocking station connection, temporary captive portal and credential handoff |
-| `src/reading_service.*` | Local reading/source configuration page and validation |
-| `src/public_reader.*` | Public HTTPS manifest, text-block and JPEG/PNG retrieval |
+| `src/reading_service.*` | Trusted-LAN temporary text delivery page and validation |
+| `src/reading_document.*` | Local chapter text-block parsing and validation |
 | `src/local_library.*` | SPIFFS bookshelf catalogue and local chapter loading |
 | `docs/HARDWARE_BASELINE.md` | Hardware capabilities and verification boundary |
 | `docs/ENGINEERING_NOTES.md` | Rendering experiments, measurements and implementation decisions |
@@ -197,7 +196,7 @@ Network time uses China Standard Time (`UTC+8`, `Asia/Shanghai`, no daylight sav
 ## Known limitations
 
 - The microphone and speech/LLM service are not connected yet. Wi-Fi pairing is only the transport foundation; serial commands still simulate semantic voice events.
-- KK does not scrape arbitrary web pages or directly execute Legado source rules; public reading uses the documented `KKREAD/1` interchange format.
+- Public book sources and remote image downloads are intentionally unsupported; KK does not scrape web pages or execute Legado source rules.
 - Deep sleep and external expansion ports are not integrated. The current power strategy switches off only the AMOLED and keeps input sampling active for quick wake-up.
 - The network time zone is currently fixed to China Standard Time; other regions still need a time-zone setting.
 - Long-term battery life has not been measured; the default timeouts are a conservative starting point.

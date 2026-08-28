@@ -13,8 +13,6 @@ class ReadingService {
   bool active() const { return active_; }
   bool hasPendingText() const { return pendingReady_; }
   bool takePendingText(String& text);
-  bool takePendingSourceUrl(String& sourceUrl);
-  void setSourceUrl(const String& sourceUrl) { sourceUrl_ = sourceUrl; }
 
  private:
   static constexpr size_t kMaxBodyBytes = 8192;
@@ -25,7 +23,6 @@ class ReadingService {
   void start();
   void sendReadingPage();
   void handleReadingSubmit();
-  void handleSourceSubmit();
   void sendJson(int statusCode, const String& body);
   static bool validateText(const String& text, uint16_t& glyphCount,
                            uint16_t& explicitLines);
@@ -34,8 +31,5 @@ class ReadingService {
   bool configured_ = false;
   bool active_ = false;
   bool pendingReady_ = false;
-  bool pendingSourceReady_ = false;
   String pendingText_;
-  String pendingSourceUrl_;
-  String sourceUrl_;
 };

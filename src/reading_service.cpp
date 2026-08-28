@@ -20,8 +20,6 @@ void ReadingService::configureServer() {
   webServer_.on("/read", HTTP_GET, [this]() { sendReadingPage(); });
   webServer_.on("/api/read", HTTP_POST,
                 [this]() { handleReadingSubmit(); });
-  webServer_.on("/api/source", HTTP_POST,
-                [this]() { handleSourceSubmit(); });
   webServer_.onNotFound([this]() {
     webServer_.sendHeader("Cache-Control", "no-store");
     webServer_.send(404, "text/plain; charset=utf-8", "页面不存在");
@@ -61,17 +59,9 @@ bool ReadingService::takePendingText(String& text) {
   return true;
 }
 
-bool ReadingService::takePendingSourceUrl(String& sourceUrl) {
-  if (!pendingSourceReady_) return false;
-  pendingSourceReady_ = false;
-  sourceUrl = pendingSourceUrl_;
-  pendingSourceUrl_ = "";
-  return true;
-}
-
 void ReadingService::sendReadingPage() {
   String page;
-  page.reserve(7600);
+  page.reserve(5200);
   page += F(
       "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
       "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
@@ -82,47 +72,24 @@ void ReadingService::sendReadingPage() {
       "margin:0 0 8px}p{color:#aaa;line-height:1.6;margin:0 0 20px}textarea{width:100%;"
       "min-height:48vh;resize:vertical;border:1px solid #3a3a3a;border-radius:20px;"
       "background:#111;color:#fff;padding:18px;font:17px/1.7 system-ui,sans-serif;"
-      "outline:none}textarea:focus,input:focus{border-color:#888}.row{display:flex;align-items:center;"
+      "outline:none}textarea:focus{border-color:#888}.row{display:flex;align-items:center;"
       "justify-content:space-between;gap:16px;margin-top:14px}.count{color:#777}button{"
       "border:0;border-radius:999px;background:#f2f2f2;color:#050505;padding:13px 24px;"
       "font-size:16px;font-weight:700}.msg{min-height:26px;margin-top:14px;color:#bbb}"
-      ".card{margin-top:30px;padding:20px;border:1px solid #292929;border-radius:22px;"
-      "background:#0d0d0d}.card h2{margin:0 0 8px;font-size:20px}.card p{margin-bottom:14px}"
-      "input{width:100%;border:1px solid #3a3a3a;border-radius:14px;background:#111;"
-      "color:#fff;padding:13px 14px;font:15px system-ui,sans-serif;outline:none}"
       "</style></head><body><main><h1>交给 KK 阅读</h1>"
-      "<p>在 KK 上长按 B，进入“阅读模式”。可以临时发送正文，也可以让 KK 主动读取公网书源。</p>"
+      "<p>在 KK 上长按 B，进入“阅读模式”并选择“局域网投送”，然后从这里发送临时正文。</p>"
       "<textarea id=\"text\" maxlength=\"1800\" placeholder=\"在这里粘贴长文……\"></textarea>"
       "<div class=\"row\"><span class=\"count\" id=\"count\">0 / 1800</span>"
       "<button id=\"send\">发送给 KK</button></div><div class=\"msg\" id=\"msg\"></div>"
-      "<section class=\"card\"><h2>公网书源</h2><p>填写 KKREAD/1 阅读清单的 HTTPS 地址。"
-      "清单可按顺序包含文字块和 JPEG/PNG 图片页。</p>"
-      "<input id=\"source\" maxlength=\"384\" type=\"url\" placeholder=\"https://example.com/book.kkread\" value=\"");
-  String escapedSource = sourceUrl_;
-  escapedSource.replace("&", "&amp;");
-  escapedSource.replace("\"", "&quot;");
-  escapedSource.replace("<", "&lt;");
-  escapedSource.replace(">", "&gt;");
-  page += escapedSource;
-  page += F(
-      "\"><div class=\"row\"><span class=\"count\">最多 12 个内容块</span>"
-      "<button id=\"save\">保存 / 清除</button></div><div class=\"msg\" id=\"smsg\"></div></section>"
       "<script>const t=document.querySelector('#text'),c=document.querySelector('#count'),"
-      "m=document.querySelector('#msg'),b=document.querySelector('#send'),"
-      "s=document.querySelector('#source'),sb=document.querySelector('#save'),"
-      "sm=document.querySelector('#smsg');"
+      "m=document.querySelector('#msg'),b=document.querySelector('#send');"
       "const n=()=>Array.from(t.value).length;const u=()=>c.textContent=n()+' / 1800';"
       "t.addEventListener('input',u);b.addEventListener('click',async()=>{const v=t.value.trim();"
       "if(!v){m.textContent='请先输入正文';return}if(n()>1800){m.textContent='正文超过 1800 字';return}"
       "b.disabled=true;m.textContent='正在发送……';try{const r=await fetch('/api/read',{method:'POST',"
       "headers:{'Content-Type':'text/plain;charset=utf-8'},body:v});const j=await r.json();"
       "m.textContent=j.message||'已发送'}catch(e){m.textContent='发送失败，请检查网络'}"
-      "finally{b.disabled=false}});sb.addEventListener('click',async()=>{const v=s.value.trim();"
-      "if(v&&!v.startsWith('https://')){sm.textContent='书源必须使用 HTTPS';return}"
-      "sb.disabled=true;sm.textContent='正在保存……';try{const r=await fetch('/api/source',{method:'POST',"
-      "headers:{'Content-Type':'text/plain;charset=utf-8'},body:v});const j=await r.json();"
-      "sm.textContent=j.message||'已保存'}catch(e){sm.textContent='保存失败，请检查网络'}"
-      "finally{sb.disabled=false}});u()</script></main></body></html>");
+      "finally{b.disabled=false}});u()</script></main></body></html>");
   webServer_.sendHeader("Cache-Control", "no-store");
   webServer_.sendHeader("X-Content-Type-Options", "nosniff");
   webServer_.sendHeader("Content-Security-Policy",
@@ -203,34 +170,8 @@ void ReadingService::handleReadingSubmit() {
   }
   pendingText_ = text;
   pendingReady_ = true;
-  sendJson(202, "{\"message\":\"已发送，KK 将在阅读模式中打开\"}");
+  sendJson(202, "{\"message\":\"已发送，KK 将在局域网投送页面中打开\"}");
   Serial.printf("Reading text queued: bytes=%u glyphs=%u lines=%u\n",
                 static_cast<unsigned>(text.length()), glyphCount,
                 explicitLines);
-}
-
-void ReadingService::handleSourceSubmit() {
-  String sourceUrl = webServer_.hasArg("plain") ? webServer_.arg("plain")
-                                                 : String();
-  sourceUrl.trim();
-  if (sourceUrl.isEmpty()) {
-    pendingSourceUrl_ = "";
-    pendingSourceReady_ = true;
-    sourceUrl_ = "";
-    sendJson(202, "{\"message\":\"公网书源已清除\"}");
-    Serial.println("Public reading source cleared");
-    return;
-  }
-  if (sourceUrl.length() < 12 || sourceUrl.length() > 384 ||
-      !sourceUrl.startsWith("https://") || sourceUrl.indexOf(' ') >= 0 ||
-      sourceUrl.indexOf('@') >= 0 || sourceUrl.indexOf('#') >= 0) {
-    sendJson(400, "{\"message\":\"请输入有效的 HTTPS 书源地址\"}");
-    return;
-  }
-  pendingSourceUrl_ = sourceUrl;
-  pendingSourceReady_ = true;
-  sourceUrl_ = sourceUrl;
-  sendJson(202, "{\"message\":\"书源已保存；在 KK 上进入阅读模式即可更新\"}");
-  Serial.printf("Public reading source queued: url_bytes=%u\n",
-                static_cast<unsigned>(sourceUrl.length()));
 }

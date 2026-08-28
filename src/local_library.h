@@ -4,14 +4,15 @@
 
 #include <Arduino.h>
 
-#include "public_reader.h"
+#include "reading_document.h"
 
 class LocalLibrary {
  public:
   static constexpr uint8_t kMaxChapters = 64;
 
   bool begin(const char* bookRoot = "/b/z");
-  bool loadChapter(uint8_t index, PublicReader& reader, String& error) const;
+  bool loadChapter(uint8_t index, ReadingDocument& document,
+                   String& error) const;
 
   bool available() const { return available_; }
   uint8_t chapterCount() const { return chapterCount_; }

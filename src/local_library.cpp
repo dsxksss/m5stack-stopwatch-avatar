@@ -138,9 +138,9 @@ bool LocalLibrary::parseCatalog(const String& original, String& error) {
   return true;
 }
 
-bool LocalLibrary::loadChapter(uint8_t index, PublicReader& reader,
+bool LocalLibrary::loadChapter(uint8_t index, ReadingDocument& document,
                                String& error) const {
-  reader.clear();
+  document.clear();
   if (!available_ || index >= chapterCount_) {
     error = "内置章节不存在";
     return false;
@@ -149,10 +149,10 @@ bool LocalLibrary::loadChapter(uint8_t index, PublicReader& reader,
   if (!readFile(chapters_[index].path, kMaxManifestBytes, manifest, error)) {
     return false;
   }
-  if (!reader.loadDocument(manifest, error)) return false;
+  if (!document.load(manifest, error)) return false;
   Serial.printf("Local chapter ready: index=%u blocks=%u\n",
                 static_cast<unsigned>(index + 1),
-                static_cast<unsigned>(reader.blockCount()));
+                static_cast<unsigned>(document.blockCount()));
   return true;
 }
 
